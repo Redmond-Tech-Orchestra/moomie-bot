@@ -11,20 +11,21 @@ const clientId = DISCORD_CLIENT_ID;
 const guildId = DISCORD_GUILD_ID;
 
 try {
+  // Register globally (works in DMs + all servers)
+  console.log(`Registering ${commandData.length} global commands...`);
+  await rest.put(
+    Routes.applicationCommands(clientId),
+    { body: commandData }
+  );
+  console.log('Global commands registered.');
+
+  // Clear any leftover guild-scoped commands (they cause duplicates)
   if (guildId) {
-    console.log(`Registering ${commandData.length} guild commands to ${guildId}...`);
     await rest.put(
       Routes.applicationGuildCommands(clientId, guildId),
-      { body: commandData }
+      { body: [] }
     );
-    console.log('Guild commands registered (instant).');
-  } else {
-    console.log(`Registering ${commandData.length} global commands...`);
-    await rest.put(
-      Routes.applicationCommands(clientId),
-      { body: commandData }
-    );
-    console.log('Global commands registered (may take up to 1 hour to propagate).');
+    console.log(`Cleared guild commands from ${guildId}.`);
   }
 } catch (err) {
   console.error('Failed to register commands:', err);

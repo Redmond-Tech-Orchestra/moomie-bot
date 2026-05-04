@@ -1,18 +1,25 @@
 # Moomie Bot
 
-Discord + Teams bot for the Redmond Tech Orchestra. Automates website maintenance using AI agents, manages reminders, and shares sheet music links.
-
-When a user runs `/website <task>`, Moomie creates a GitHub issue, triggers a Gemini CLI agent to implement the changes, pushes a PR, and pings the user back — all hands-free.
+Discord + Teams bot for the Redmond Tech Orchestra (Microsoft Open Orchestra). Manages project tracking, automates website maintenance using AI agents, generates activity digests, and handles reminders.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
+| `/board [event]` | Consolidated action board — open items, overdue, by event. Uses AI to merge duplicates and group related tasks |
+| `/events` | List upcoming events with T-minus countdowns |
+| `/digest [window]` | AI-generated summary of recent server activity (default: 1 week) |
 | `/website <task>` | Creates a GitHub issue, triggers AI agent to code changes, opens a PR |
 | `/remind <text>` | Natural language reminder — supports `@user`, `#channel`, relative/absolute times |
 | `/music [link]` | Get or set the shared sheet music folder link |
 
-Attachments on `/website` are saved locally and copied into the workspace for the AI agent to use (e.g., PDFs, images to update on the site).
+## Automatic Features
+
+**Conversation Watcher** — Monitors all text channels. After 2 hours of silence, extracts action items, detects completions, and nudges stalled discussions via Gemini 2.5 Flash. Posts findings with ✅/❌ for human confirmation. Includes insert-time dedup to prevent cross-channel duplicates.
+
+**Event Watcher** — Auto-detects new channels in the "Performances" category, parses event names/dates, and tracks them. Archives events when channels move to "Archived."
+
+**Website Agent** — When `/website` is used, the full pipeline runs: issue creation → Gemini CLI agent → branch + PR → user notification.
 
 ## Architecture
 
@@ -25,6 +32,8 @@ Attachments on `/website` are saved locally and copied into the workspace for th
 │  └── index.ts         Barrel — the ONLY export for features│
 ├────────────────────────────────────────────────────────────┤
 │  Features (src/features/)                                  │
+│  ├── tracker/         Event & action item tracking (AI)    │
+│  ├── digest/          AI-powered activity summaries        │
 │  ├── website/         AI agent pipeline                    │
 │  ├── remind/          Timer-based reminders                │
 │  └── music/           Sheet music link store               │
@@ -89,6 +98,15 @@ docker compose --profile dev up bot-dev
 docker compose up -d bot
 ```
 
+## Deployment
+
+```bash
+npm run deploy          # Syncs files to server, rebuilds Docker container
+npm run deploy-commands # Registers slash commands with Discord (run after adding/changing commands)
+```
+
+The deploy script (`deploy.ps1`) SCPs project files to the production server and runs `docker compose up -d --build`.
+
 ## Environment Variables
 
 ### Required
@@ -121,7 +139,7 @@ docker compose up -d bot
 | `MUSIC_ADMIN_ROLE` | `Librarian` | Discord role allowed to set music link |
 | `DISCORD_GUILD_ID` | — | Scope commands to a guild (instant, for testing) |
 | `CODING_AGENT` | `gemini` | Agent backend: `gemini` \| `claude` \| `codex` |
-| `GEMINI_API_KEY` | — | Google AI API key (for title generation) |
+| `GEMINI_API_KEY` | — | Google AI API key (for extraction, digest, board consolidation) |
 | `GEMINI_MODEL` | — | Override Gemini model (leave unset for default) |
 | `AGENT_WORKSPACE` | `./workspace` | Directory for cloned repos |
 | `TEAMS_APP_ID` | — | Microsoft Bot Framework app ID |
@@ -176,8 +194,14 @@ This drains all queued jobs immediately. The currently running job will still fi
 src/
 ├── adapters/       Platform I/O (Discord, Teams, notifications)
 ├── commands/       Slash command definitions + registry
-├── features/       Business logic (website, remind, music)
-│   └── website/agents/   Pluggable AI agent implementations
+├── features/       Business logic
+│   ├── tracker/    Event detection, conversation watcher, action board
+│   ├── digest/     AI activity summaries
+│   ├── website/    AI coding agent pipeline
+│   │   └── agents/ Pluggable AI agent implementations
+│   ├── remind/     Timer-based reminders
+│   └── music/      Sheet music link store
+├── prompts/        LLM prompt templates (.md) + loader
 ├── index.ts        Entry point
 ├── webhook-server.ts   Express server + GitHub webhooks
 ├── db.ts           SQLite + migrations
