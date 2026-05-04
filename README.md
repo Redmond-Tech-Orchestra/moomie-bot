@@ -130,7 +130,6 @@ docker compose up -d bot
 | `GEMINI_API_KEY` | — | Google AI API key (for title generation) |
 | `GEMINI_MODEL` | — | Override Gemini model (leave unset for default) |
 | `AGENT_WORKSPACE` | `./workspace` | Directory for cloned repos |
-| `ADMIN_SECRET` | — | Secret for `/admin/reset-queue` endpoint |
 | `TEAMS_APP_ID` | — | Microsoft Bot Framework app ID |
 | `TEAMS_APP_PASSWORD` | — | Microsoft Bot Framework password |
 
@@ -144,12 +143,21 @@ docker compose up -d bot
 
 The bot triggers on the `moomie-bot` label being added to an issue. Only org members can trigger the agent.
 
-## Admin Endpoints
+## Admin
 
-| Endpoint | Method | Auth | Description |
-|----------|--------|------|-------------|
-| `/status` | GET | None | Queue health: running, queued count, runtime |
-| `/admin/reset-queue` | POST | `x-admin-secret` header | Force-clear stuck queue |
+Queue health is available locally:
+
+```bash
+curl http://localhost:3000/status
+```
+
+To force-reset a stuck queue, send `SIGUSR1` to the process:
+
+```bash
+kill -USR1 $(pidof node)
+```
+
+This drains all queued jobs immediately. The currently running job will still finish (or hit its 35-min timeout).
 
 ## Queue System
 
@@ -158,7 +166,7 @@ The bot triggers on the `moomie-bot` label being added to an issue. Only org mem
 - 5-minute idle timeout (no agent output)
 - Jobs waiting >1 hour are auto-discarded
 - Attachments cleaned up after every job (success or failure)
-- `GET /status` to check, `POST /admin/reset-queue` to unstick
+- `GET /status` to check queue health; `kill -USR1` to unstick
 
 ## Security
 
@@ -167,7 +175,6 @@ The bot triggers on the `moomie-bot` label being added to an issue. Only org mem
 - **Agent sandbox** — `policies/agent-sandbox.toml` blocks destructive commands, network access, env/secret file reads
 - **No shell injection** — All git/agent commands use `execFileSync` with array args
 - **Adapter isolation** — ESLint prevents features from bypassing platform abstractions
-- **Admin auth** — Reset endpoint requires secret header
 
 ## Project Structure
 

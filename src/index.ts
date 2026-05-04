@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { startDiscord, client } from './adapters/discord.js';
 import { startServer } from './webhook-server.js';
-import { warmupRepo } from './features/website/job-runner.js';
+import { warmupRepo, forceResetQueue } from './features/website/job-runner.js';
 import { getDb } from './db.js';
 
 // ─── Validate required env vars ──────────────────────────────────────────────
@@ -33,3 +33,7 @@ function shutdown(signal: string) {
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGUSR1', () => {
+  const { drained } = forceResetQueue();
+  console.log(`[Admin] SIGUSR1 received — queue reset, ${drained} job(s) drained`);
+});
