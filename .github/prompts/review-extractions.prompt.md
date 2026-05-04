@@ -4,7 +4,7 @@ agent: "agent"
 tools: [search]
 argument-hint: "Paste Moomie's extraction output or describe what to review"
 ---
-You are reviewing automated extraction output from Moomie (a Discord bot) that watches conversations in the Microsoft Open Orchestra Discord server.
+You are reviewing automated extraction output from Moomie (a Discord bot) that watches conversations in the Redmond Tech Orchestra Discord server.
 
 The extraction rules are defined in `src/prompts/burst-extraction.md` — read that file to understand what Moomie considers a valid commitment vs. noise.
 

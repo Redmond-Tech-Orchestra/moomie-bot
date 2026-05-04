@@ -1,5 +1,5 @@
 /**
- * Tracked configuration constants for the Microsoft Open Orchestra bot.
+ * Tracked configuration constants for the Redmond Tech Orchestra bot.
  * All values can be overridden via environment variables.
  * Secrets (tokens, keys) stay in .env and are read directly via process.env.
  */
