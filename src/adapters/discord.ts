@@ -1,11 +1,12 @@
 import { Client, GatewayIntentBits, Partials } from 'discord.js';
-import type { ChatInputCommandInteraction } from 'discord.js';
+import type { ChatInputCommandInteraction, TextChannel } from 'discord.js';
 import { loadCommands } from '../commands/slash-commands.js';
 import { handlers } from '../commands/command-registry.js';
 import { initScheduler } from '../features/remind/scheduler.js';
 import { syncEvents, registerChannelWatcher, registerEventConfirmationListener } from '../features/tracker/event-watcher.js';
 import { autocompleteEvent } from '../features/tracker/autocomplete.js';
 import { registerConversationWatcher } from '../features/tracker/conversation-watcher.js';
+import { handleChatMessage } from '../features/chat/handle-message.js';
 import type { CommandContext } from '../types.js';
 
 export const client = new Client({
@@ -136,7 +137,7 @@ export async function startDiscord(): Promise<void> {
     }
   });
 
-  // Respond to DMs and mentions with "Moo." if not a recognized command
+  // Respond to DMs and mentions with natural language chat
   client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
 
@@ -145,7 +146,30 @@ export async function startDiscord(): Promise<void> {
 
     if (!isDM && !isMentioned) return;
 
-    await message.reply('Moo.');
+    // Strip the bot mention from the message content
+    const content = message.content
+      .replace(new RegExp(`<@!?${client.user!.id}>`, 'g'), '')
+      .trim();
+
+    if (!content) {
+      await message.reply('Moo! 🐄');
+      return;
+    }
+
+    try {
+      await message.channel.sendTyping();
+      const response = await handleChatMessage({
+        userId: message.author.id,
+        userName: message.member?.displayName ?? message.author.displayName ?? message.author.username,
+        channelId: message.channelId,
+        channelName: (message.channel as TextChannel).name ?? 'DM',
+        content,
+      });
+      await message.reply(response);
+    } catch (err) {
+      console.error('[Chat] Error handling message:', err);
+      await message.reply('Something went wrong. Moo. 🐄');
+    }
   });
 
   await client.login(process.env.DISCORD_TOKEN);
