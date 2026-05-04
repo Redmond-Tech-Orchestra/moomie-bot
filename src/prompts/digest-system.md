@@ -35,8 +35,10 @@ Then an **Org-wide** section for things not tied to a specific event:
 
 ## Rules
 
-- Be concise. Use bullet points.
+- Keep the ENTIRE output under 1800 characters. This is a hard limit — prioritize ruthlessly.
+- Be concise. Use bullet points, not full sentences.
 - If a section has nothing, omit it.
+- Omit events with zero activity AND zero open items.
 - Reference channel names with # prefix.
 - Use people's display names as written in the transcript.
 - Focus on substance — skip greetings and small talk.

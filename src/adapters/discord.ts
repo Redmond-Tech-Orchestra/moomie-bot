@@ -3,7 +3,7 @@ import type { ChatInputCommandInteraction } from 'discord.js';
 import { loadCommands } from '../commands/slash-commands.js';
 import { handlers } from '../commands/command-registry.js';
 import { initScheduler } from '../features/remind/scheduler.js';
-import { syncEvents, registerChannelWatcher } from '../features/tracker/event-watcher.js';
+import { syncEvents, registerChannelWatcher, registerEventConfirmationListener } from '../features/tracker/event-watcher.js';
 import { autocompleteEvent } from '../features/tracker/autocomplete.js';
 import { registerConversationWatcher } from '../features/tracker/conversation-watcher.js';
 import type { CommandContext } from '../types.js';
@@ -17,7 +17,7 @@ export const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages,
   ],
-  partials: [Partials.Channel, Partials.Message],
+  partials: [Partials.Channel, Partials.Message, Partials.Reaction],
 });
 
 /**
@@ -81,6 +81,7 @@ export async function startDiscord(): Promise<void> {
     console.log(`[Discord] Logged in as ${client.user!.tag}`);
     initScheduler();
     registerChannelWatcher(client);
+    registerEventConfirmationListener(client);
     registerConversationWatcher(client);
     await syncEvents(client);
   });
