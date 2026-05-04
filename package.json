@@ -12,6 +12,7 @@
     "deploy-commands": "tsx src/deploy-commands.ts"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "@octokit/auth-app": "^8.2.0",
     "@octokit/rest": "^21.0.0",
     "better-sqlite3": "^11.0.0",

@@ -8,7 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export async function loadCommands(): Promise<CommandDefinitionCollection> {
   const commands: CommandDefinitionCollection = new Collection();
-  const exclude = ['index', 'handlers'];
+  const exclude = ['index', 'handlers', 'command-registry', 'slash-commands'];
   const files = fs.readdirSync(__dirname)
     .filter((f) => (f.endsWith('.ts') || f.endsWith('.js')) && !f.endsWith('.d.ts'))
     .filter((f) => !exclude.some((e) => f.startsWith(e)));
