@@ -6,8 +6,10 @@ import {
   getActiveEvents,
   getOpenItemsForEvent,
   getEventByChannelId,
+  getAllOpenItems,
   createItem,
   markItemDone,
+  updateItemDescription,
   type TrackerEvent,
   type TrackerItem,
 } from './store.js';
@@ -20,7 +22,7 @@ const MAX_BUFFER = 50;                         // Oldest messages roll off past 
 const RATE_LIMIT_MS = 60 * 60 * 1000;         // Max 1 extraction per channel per hour
 const CONFIRMATION_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours to respond
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
 // ─── In-Memory Buffers ──────────────────────────────────────────────────────
 
@@ -352,6 +354,126 @@ async function callGemini(
   }
 }
 
+// ─── Insert-Time Dedup ──────────────────────────────────────────────────────
+
+interface DedupResult {
+  new_index: number;
+  verdict: 'new' | 'duplicate' | 'update';
+  existing_id: number | null;
+  merged_description: string | null;
+}
+
+/**
+ * Check a batch of extracted items against existing open items via LLM.
+ * Returns verdict per item: new (insert), duplicate (skip), or update (merge).
+ */
+async function dedupItems(
+  newItems: ExtractedItem[],
+): Promise<DedupResult[]> {
+  if (newItems.length === 0) return [];
+
+  const existingItems = getAllOpenItems();
+  if (existingItems.length === 0) {
+    // Nothing to dedup against — all are new
+    return newItems.map((_, i) => ({ new_index: i, verdict: 'new' as const, existing_id: null, merged_description: null }));
+  }
+
+  const existingText = existingItems.map((i) =>
+    `[#${i.id}] ${i.description}${i.owner_name ? ` (owner: ${i.owner_name})` : ''}${i.event_id ? ` (event_id: ${i.event_id})` : ''}`
+  ).join('\n');
+
+  const newText = newItems.map((item, idx) =>
+    `[${idx}] ${item.description}${item.owner ? ` (owner: ${item.owner})` : ''}${item.event ? ` (event: ${item.event})` : ''}`
+  ).join('\n');
+
+  const systemPrompt = loadPrompt('dedup-check.md', {
+    EXISTING_ITEMS: existingText,
+    NEW_ITEMS: newText,
+  }, true); // skip persona for utility call
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    console.warn('[Tracker] No GEMINI_API_KEY — skipping dedup, treating all as new');
+    return newItems.map((_, i) => ({ new_index: i, verdict: 'new' as const, existing_id: null, merged_description: null }));
+  }
+
+  try {
+    const res = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents: [{ parts: [{ text: 'Check these items for duplicates.' }] }],
+        generationConfig: { responseMimeType: 'application/json' },
+      }),
+    });
+
+    if (!res.ok) {
+      console.error(`[Tracker] Dedup API error ${res.status}`);
+      return newItems.map((_, i) => ({ new_index: i, verdict: 'new' as const, existing_id: null, merged_description: null }));
+    }
+
+    const data = await res.json() as {
+      candidates?: { content?: { parts?: { text?: string }[] } }[];
+    };
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    if (!text) {
+      return newItems.map((_, i) => ({ new_index: i, verdict: 'new' as const, existing_id: null, merged_description: null }));
+    }
+
+    const parsed = JSON.parse(text) as { results: DedupResult[] };
+    return parsed.results;
+  } catch (err) {
+    console.error('[Tracker] Dedup call failed:', err);
+    return newItems.map((_, i) => ({ new_index: i, verdict: 'new' as const, existing_id: null, merged_description: null }));
+  }
+}
+
+/**
+ * Save items with dedup — skips duplicates, merges updates, inserts new.
+ */
+async function saveItemsWithDedup(
+  items: ExtractedItem[],
+  events: TrackerEvent[],
+  channelId: string,
+): Promise<{ inserted: number; skipped: number; updated: number }> {
+  const results = await dedupItems(items);
+  let inserted = 0, skipped = 0, updated = 0;
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const result = results.find((r) => r.new_index === i);
+    const verdict = result?.verdict ?? 'new';
+
+    if (verdict === 'duplicate') {
+      skipped++;
+      continue;
+    }
+
+    if (verdict === 'update' && result?.existing_id && result.merged_description) {
+      updateItemDescription(result.existing_id, result.merged_description);
+      updated++;
+      continue;
+    }
+
+    // verdict === 'new' or fallback
+    const event = resolveEvent(item.event, events);
+    createItem({
+      event_id: event?.id ?? null,
+      description: item.description,
+      owner_id: item.owner_id ?? undefined,
+      owner_name: item.owner ?? undefined,
+      target_date: item.deadline ?? undefined,
+      source: 'extracted',
+      source_channel: channelId,
+      source_date: new Date().toISOString().slice(0, 10),
+    });
+    inserted++;
+  }
+
+  return { inserted, skipped, updated };
+}
+
 // ─── Item Matching ──────────────────────────────────────────────────────────
 
 function findCompletionMatch(
@@ -484,22 +606,8 @@ async function confirmExtraction(pending: PendingExtraction, _client: Client): P
   clearTimeout(pending.timer);
   const events = getActiveEvents();
 
-  // Track confident items
-  for (const item of pending.items) {
-    const event = resolveEvent(item.event, events);
-    if (!event) continue; // Can't track without an event
-
-    createItem({
-      event_id: event.id,
-      description: item.description,
-      owner_id: item.owner_id ?? undefined,
-      owner_name: item.owner ?? undefined,
-      target_date: item.deadline ?? undefined,
-      source: 'extracted',
-      source_channel: pending.channelId,
-      source_date: new Date().toISOString().slice(0, 10),
-    });
-  }
+  // Save items with dedup check
+  const { inserted, skipped, updated } = await saveItemsWithDedup(pending.items, events, pending.channelId);
 
   // Mark completions as done
   for (const { item } of pending.matchedCompletions) {
@@ -511,12 +619,17 @@ async function confirmExtraction(pending: PendingExtraction, _client: Client): P
     const channel = await _client.channels.fetch(pending.channelId) as TextChannel | null;
     if (channel) {
       const msg = await channel.messages.fetch(pending.messageId);
-      await msg.edit(msg.content + '\n\n*✅ Confirmed and tracked.*');
+      let note = '\n\n*✅ Confirmed and tracked.';
+      if (skipped > 0 || updated > 0) {
+        note += ` (${inserted} new, ${skipped} dupes skipped, ${updated} updated)`;
+      }
+      note += '*';
+      await msg.edit(msg.content + note);
     }
   } catch { /* best effort */ }
 
   pendingExtractions.delete(pending.messageId);
-  console.log(`[Tracker] Extraction confirmed: ${pending.items.length} items, ${pending.matchedCompletions.length} completions`);
+  console.log(`[Tracker] Extraction confirmed: ${inserted} inserted, ${skipped} skipped, ${updated} updated, ${pending.matchedCompletions.length} completions`);
 }
 
 async function dismissExtraction(pending: PendingExtraction, _client: Client): Promise<void> {
@@ -554,23 +667,9 @@ async function autoResolve(messageId: string): Promise<void> {
 
   const events = getActiveEvents();
 
-  // Auto-track only confident items
+  // Auto-track only confident items, with dedup
   const confidentItems = pending.items.filter((i) => i.confidence === 'confident');
-  for (const item of confidentItems) {
-    const event = resolveEvent(item.event, events);
-    if (!event) continue;
-
-    createItem({
-      event_id: event.id,
-      description: item.description,
-      owner_id: item.owner_id ?? undefined,
-      owner_name: item.owner ?? undefined,
-      target_date: item.deadline ?? undefined,
-      source: 'extracted',
-      source_channel: pending.channelId,
-      source_date: new Date().toISOString().slice(0, 10),
-    });
-  }
+  const { inserted, skipped, updated } = await saveItemsWithDedup(confidentItems, events, pending.channelId);
 
   // Auto-mark confident completions
   for (const { item } of pending.matchedCompletions) {
@@ -583,15 +682,15 @@ async function autoResolve(messageId: string): Promise<void> {
     if (channel) {
       const msg = await channel.messages.fetch(pending.messageId);
       const ambiguousCount = pending.items.filter((i) => i.confidence === 'needs_clarification').length;
-      let note = `\n\n*Auto-tracked ${confidentItems.length} confident item(s) after 24h.`;
-      if (ambiguousCount > 0) {
-        note += ` ${ambiguousCount} ambiguous item(s) were dropped.`;
-      }
+      let note = `\n\n*Auto-tracked ${inserted} confident item(s) after 24h.`;
+      if (skipped > 0) note += ` ${skipped} dupe(s) skipped.`;
+      if (updated > 0) note += ` ${updated} updated.`;
+      if (ambiguousCount > 0) note += ` ${ambiguousCount} ambiguous item(s) dropped.`;
       note += '*';
       await msg.edit(msg.content + note);
     }
   } catch { /* best effort */ }
 
   pendingExtractions.delete(messageId);
-  console.log(`[Tracker] Auto-resolved extraction: ${confidentItems.length} tracked, ${pending.items.length - confidentItems.length} dropped`);
+  console.log(`[Tracker] Auto-resolved: ${inserted} inserted, ${skipped} skipped, ${updated} updated, ${confidentItems.length - inserted - skipped - updated} dropped`);
 }
