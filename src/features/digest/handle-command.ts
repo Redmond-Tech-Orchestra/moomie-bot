@@ -1,19 +1,22 @@
 import type { CommandContext } from '../../types.js';
 import { getRecentMessages } from '../../adapters/index.js';
 import type { ChannelMessages } from '../../adapters/index.js';
+import { loadPrompt } from '../../prompts/load-prompt.js';
+import { getActiveEvents } from '../tracker/store.js';
+import * as chrono from 'chrono-node';
 
 export const name = 'digest';
 export const description = 'Structured summary of recent server activity';
 
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
-const DEFAULT_WINDOW = '1w';
+const DEFAULT_WINDOW = '1 week ago';
 const MAX_CONTEXT_CHARS = 80_000; // Stay well under Gemini's context window
 
 export async function execute(ctx: CommandContext, args: string): Promise<void> {
   const window = args.trim() || DEFAULT_WINDOW;
   const since = parseWindow(window);
   if (!since) {
-    await ctx.reply(`Invalid time window: \`${window}\`. Use formats like \`4h\`, \`1d\`, \`2w\`, \`3m\`.`);
+    await ctx.reply(`Couldn't understand \`${window}\`. Try "3 days", "last week", "since monday", or "2w".`);
     return;
   }
 
@@ -49,20 +52,27 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
 }
 
 function parseWindow(input: string): Date | null {
-  const match = input.match(/^(\d+)\s*(h|d|w|m)$/i);
-  if (!match) return null;
-
-  const amount = parseInt(match[1], 10);
-  const unit = match[2].toLowerCase();
-  const now = Date.now();
-
-  switch (unit) {
-    case 'h': return new Date(now - amount * 60 * 60 * 1000);
-    case 'd': return new Date(now - amount * 24 * 60 * 60 * 1000);
-    case 'w': return new Date(now - amount * 7 * 24 * 60 * 60 * 1000);
-    case 'm': return new Date(now - amount * 30 * 24 * 60 * 60 * 1000);
-    default: return null;
+  // Support shorthand like "4h", "1d", "2w", "3m"
+  const shorthand = input.match(/^(\d+)\s*(h|d|w|m)$/i);
+  if (shorthand) {
+    const amount = parseInt(shorthand[1], 10);
+    const unit = shorthand[2].toLowerCase();
+    const now = Date.now();
+    switch (unit) {
+      case 'h': return new Date(now - amount * 60 * 60 * 1000);
+      case 'd': return new Date(now - amount * 24 * 60 * 60 * 1000);
+      case 'w': return new Date(now - amount * 7 * 24 * 60 * 60 * 1000);
+      case 'm': return new Date(now - amount * 30 * 24 * 60 * 60 * 1000);
+    }
   }
+
+  // Natural language: "last week", "3 days ago", "since monday", "past 2 weeks"
+  const results = chrono.parse(input);
+  if (results.length > 0) {
+    return results[0].start.date();
+  }
+
+  return null;
 }
 
 function formatTranscript(channels: ChannelMessages[]): string {
@@ -85,28 +95,17 @@ async function callGemini(transcript: string, window: string): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return '*GEMINI_API_KEY not configured.*';
 
-  const systemPrompt = `You are a project assistant for a community orchestra's Discord server. Analyze the following conversation transcript from the last ${window} across all channels.
+  const events = getActiveEvents();
+  const eventsContext = events.length > 0
+    ? 'Known upcoming events:\n' + events.map((e) => {
+        const dateStr = new Date(e.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        return `- ${e.name} — ${dateStr}${e.channel_name ? ` (channel: #${e.channel_name})` : ''}`;
+      }).join('\n')
+    : 'No upcoming events currently tracked.';
 
-Produce a structured digest in this exact format:
-
-## Status & Progress
-- What's actively being worked on, by whom, and current state
-
-## Decisions Made
-- Any agreements, choices, or conclusions reached
-
-## Action Items & Follow-ups
-- Things that need to happen next, who's responsible (if mentioned), and any deadlines
-
-## Notable Discussions
-- Important topics that don't fit above but are worth noting
-
-Rules:
-- Be concise. Use bullet points.
-- If a section has nothing, write "None."
-- Reference channel names with # prefix
-- Use people's display names as written in the transcript
-- Focus on substance, skip greetings and small talk`;
+  const systemPrompt = loadPrompt('digest-system.md', {
+    EVENTS_CONTEXT: eventsContext,
+  });
 
   try {
     const res = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
