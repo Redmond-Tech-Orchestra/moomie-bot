@@ -1,12 +1,15 @@
-import { execSync, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getOctokit } from './github.js';
+import { getOctokit } from './github-client.js';
 import { getAgent } from './agents/index.js';
 import type { AgentResult } from './agents/index.js';
+import { copyToWorkspace, deleteUploads } from './attachment-store.js';
 
 const WORKSPACE_DIR = path.resolve(process.env.AGENT_WORKSPACE || './workspace');
 const MAX_QUEUE_SIZE = 5;
+const JOB_TIMEOUT_MS = 35 * 60 * 1000; // 35 min (slightly above Gemini's 30 min hard cap)
+const JOB_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour — discard queued jobs older than this
 
 interface OrchestratorResult {
   success: boolean;
@@ -22,10 +25,12 @@ interface QueuedJob {
   options: CodingTaskOptions;
   resolve: (result: OrchestratorResult) => void;
   reject: (err: Error) => void;
+  enqueuedAt: number;
 }
 
 const queue: QueuedJob[] = [];
 let running = false;
+let currentJobStart: number | null = null;
 let warmupDone = false;
 let warmupPromise: Promise<void> | null = null;
 
@@ -33,16 +38,47 @@ async function processQueue(): Promise<void> {
   if (running || queue.length === 0) return;
   // Wait for warmup to finish before processing jobs
   if (!warmupDone && warmupPromise) await warmupPromise;
+
+  // Discard stale jobs that have been waiting too long
+  while (queue.length > 0 && Date.now() - queue[0].enqueuedAt > JOB_MAX_AGE_MS) {
+    const stale = queue.shift()!;
+    console.warn(`[JobRunner] Discarding stale job #${stale.options.issueNumber || '?'} (queued ${Math.round((Date.now() - stale.enqueuedAt) / 60000)}min ago)`);
+    stale.resolve({ success: false, error: 'Job expired — it waited too long in the queue.' });
+    if (stale.options.attachments?.length) deleteUploads(stale.options.attachments);
+  }
+
+  if (queue.length === 0) return;
   running = true;
+  currentJobStart = Date.now();
 
   const job = queue.shift()!;
+
+  // Hard timeout: if the job doesn't finish in time, force-resolve it
+  const timeout = setTimeout(() => {
+    if (running) {
+      console.error(`[JobRunner] Job #${job.options.issueNumber || '?'} timed out after ${JOB_TIMEOUT_MS / 60000}min — force-clearing`);
+      running = false;
+      currentJobStart = null;
+      job.resolve({ success: false, error: 'Job timed out and was force-cleared.' });
+      if (job.options.attachments?.length) deleteUploads(job.options.attachments);
+      processQueue();
+    }
+  }, JOB_TIMEOUT_MS);
+
   try {
     const result = await executeTask(job.options);
+    clearTimeout(timeout);
     job.resolve(result);
   } catch (err) {
+    clearTimeout(timeout);
     job.reject(err instanceof Error ? err : new Error(String(err)));
   } finally {
+    // Clean up uploaded attachments
+    if (job.options.attachments?.length) {
+      deleteUploads(job.options.attachments);
+    }
     running = false;
+    currentJobStart = null;
     processQueue();
   }
 }
@@ -103,7 +139,7 @@ function cleanupLocalBranches(repoDir: string): void {
     for (const branch of branches.split('\n')) {
       const name = branch.replace(/^\*?\s*/, '').trim();
       if (name) {
-        try { git(['branch', '-D', name], repoDir); } catch {}
+        try { git(['branch', '-D', name], repoDir); } catch { /* branch already gone */ }
       }
     }
     // Prune remote tracking refs
@@ -135,12 +171,34 @@ interface CodingTaskOptions {
   task: string;
   title?: string;
   issueNumber?: number;
-  referenceFiles?: string[];
   requestedBy: string;
+  /** Filenames in the uploads/ directory to copy into the workspace */
+  attachments?: string[];
 }
 
-export function getQueueStatus(): { running: boolean; queued: number } {
-  return { running, queued: queue.length };
+export function getQueueStatus(): { running: boolean; queued: number; runningForMs: number | null } {
+  return {
+    running,
+    queued: queue.length,
+    runningForMs: currentJobStart ? Date.now() - currentJobStart : null,
+  };
+}
+
+/**
+ * Force-clear the running flag and drain the queue.
+ * Use when the queue is stuck and no other fix works.
+ */
+export function forceResetQueue(): { drained: number } {
+  const drained = queue.length;
+  for (const job of queue) {
+    job.resolve({ success: false, error: 'Queue was force-reset by admin.' });
+    if (job.options.attachments?.length) deleteUploads(job.options.attachments);
+  }
+  queue.length = 0;
+  running = false;
+  currentJobStart = null;
+  console.warn(`[JobRunner] Queue force-reset. Drained ${drained} queued jobs.`);
+  return { drained };
 }
 
 export function runCodingTask(options: CodingTaskOptions): Promise<OrchestratorResult> {
@@ -151,10 +209,10 @@ export function runCodingTask(options: CodingTaskOptions): Promise<OrchestratorR
     });
   }
 
-  console.log(`[Orchestrator] Queued job #${options.issueNumber || '?'} (${queue.length + 1} in queue, ${running ? 'one running' : 'idle'})`);
+  console.log(`[JobRunner] Queued job #${options.issueNumber || '?'} (${queue.length + 1} in queue, ${running ? 'one running' : 'idle'})`);
 
   return new Promise((resolve, reject) => {
-    queue.push({ options, resolve, reject });
+    queue.push({ options, resolve, reject, enqueuedAt: Date.now() });
     processQueue();
   });
 }
@@ -162,7 +220,7 @@ export function runCodingTask(options: CodingTaskOptions): Promise<OrchestratorR
 // ─── Task Execution ───────────────────────────────────────────────────────────
 
 async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResult> {
-  const { task, title, issueNumber, referenceFiles, requestedBy } = options;
+  const { task, title, issueNumber, requestedBy, attachments } = options;
   const prTitle = title || task.split('\n')[0].slice(0, 80);
   const owner = process.env.GITHUB_OWNER!;
   const repo = process.env.GITHUB_REPO!;
@@ -187,11 +245,23 @@ async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResu
     git(['reset', '--hard', 'main'], repoDir);
   }
 
+  // 2.5 Copy attachments into the workspace
+  if (attachments && attachments.length > 0) {
+    const destDir = path.join(repoDir, '.github', 'issue-assets');
+    for (const fileName of attachments) {
+      try {
+        copyToWorkspace(fileName, destDir);
+      } catch (err) {
+        console.warn(`[Orchestrator] Failed to copy attachment ${fileName}:`, err);
+      }
+    }
+  }
+
   // 3. Run the coding agent
   let result: AgentResult;
   try {
     result = await agent.execute(
-      { prompt: task, referenceFiles },
+      { prompt: task },
       repoDir
     );
   } catch (err) {
@@ -251,7 +321,7 @@ async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResu
 
     // 7. Cleanup: switch to main, delete local branch
     git(['checkout', 'main'], repoDir);
-    try { git(['branch', '-D', branchName], repoDir); } catch {}
+    try { git(['branch', '-D', branchName], repoDir); } catch { /* already gone */ }
 
     return {
       success: true,

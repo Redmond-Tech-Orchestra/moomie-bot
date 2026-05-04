@@ -1,7 +1,7 @@
 import { Client, GatewayIntentBits, Partials } from 'discord.js';
 import type { ChatInputCommandInteraction } from 'discord.js';
-import { loadCommands } from '../commands/index.js';
-import { handlers } from '../commands/handlers.js';
+import { loadCommands } from '../commands/slash-commands.js';
+import { handlers } from '../commands/command-registry.js';
 import { initScheduler } from '../features/remind/scheduler.js';
 import type { CommandContext } from '../types.js';
 
@@ -74,7 +74,7 @@ export async function startDiscord(): Promise<void> {
 
   client.once('ready', () => {
     console.log(`[Discord] Logged in as ${client.user!.tag}`);
-    initScheduler(client);
+    initScheduler();
   });
 
   client.on('interactionCreate', async (interaction) => {

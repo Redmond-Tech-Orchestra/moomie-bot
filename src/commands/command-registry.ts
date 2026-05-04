@@ -1,7 +1,7 @@
 import type { CommandHandler } from '../types.js';
-import * as website from '../features/website/command.js';
-import * as remind from '../features/remind/command.js';
-import * as music from '../features/music/command.js';
+import * as website from '../features/website/handle-command.js';
+import * as remind from '../features/remind/handle-command.js';
+import * as music from '../features/music/handle-command.js';
 
 export const handlers: Map<string, CommandHandler> = new Map();
 

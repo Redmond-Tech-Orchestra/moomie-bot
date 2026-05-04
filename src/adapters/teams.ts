@@ -3,8 +3,9 @@ import {
   ConfigurationBotFrameworkAuthentication,
   TurnContext,
   ActivityTypes,
+  ConversationReference,
 } from 'botbuilder';
-import { handlers } from '../commands/handlers.js';
+import { handlers } from '../commands/command-registry.js';
 import type { CommandContext } from '../types.js';
 
 const botFrameworkAuth = new ConfigurationBotFrameworkAuthentication({
@@ -56,6 +57,7 @@ function buildContext(turnContext: TurnContext, overrides?: { targetUserId?: str
     platform: 'teams',
     targetUserId: overrides?.targetUserId,
     targetChannelId: overrides?.targetChannelId,
+    conversationRef: getConversationRef(turnContext),
     reply: async (text: string) => {
       await turnContext.sendActivity(text);
     },
@@ -116,4 +118,26 @@ export async function startTeams(app: import('express').Express): Promise<void> 
   });
 
   console.log('[Teams] Bot endpoint registered at /api/messages');
+}
+
+/**
+ * Send a proactive message to a Teams conversation using a stored reference.
+ */
+export async function sendTeamsProactiveMessage(conversationRefJson: string, message: string): Promise<void> {
+  const ref = JSON.parse(conversationRefJson) as Partial<ConversationReference>;
+  await adapter.continueConversationAsync(
+    process.env.TEAMS_APP_ID || '',
+    ref,
+    async (turnContext) => {
+      await turnContext.sendActivity(message);
+    },
+  );
+}
+
+/**
+ * Get a serialized ConversationReference from a TurnContext.
+ */
+export function getConversationRef(turnContext: TurnContext): string {
+  const ref = TurnContext.getConversationReference(turnContext.activity);
+  return JSON.stringify(ref);
 }

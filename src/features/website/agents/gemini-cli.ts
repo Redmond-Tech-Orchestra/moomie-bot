@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
-import type { CodingAgent, AgentTask, AgentResult } from './types.js';
+import type { CodingAgent, AgentTask, AgentResult } from './agent-types.js';
 
 const POLICY_PATH = path.resolve('policies', 'agent-sandbox.toml');
 
@@ -27,9 +27,6 @@ export class GeminiAgent implements CodingAgent {
 
   private buildPrompt(task: AgentTask): string {
     let prompt = task.prompt;
-    if (task.referenceFiles && task.referenceFiles.length > 0) {
-      prompt += `\n\nReference files to use:\n${task.referenceFiles.map((f) => `- ${f}`).join('\n')}`;
-    }
     prompt += '\n\nMake the necessary code changes directly. Do not ask questions — just implement the task.';
     return prompt;
   }

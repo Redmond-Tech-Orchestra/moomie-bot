@@ -1,10 +1,11 @@
 import type { CommandContext } from '../../types.js';
-import { createIssueAndAssignCopilot, uploadAttachmentToRepo } from './github.js';
-import { trackIssue } from './tracker.js';
-import { generateIssueTitle } from './summarize.js';
+import { createIssue } from './github-client.js';
+import { trackIssue } from './issue-tracker.js';
+import { generateIssueTitle } from './title-generator.js';
+import { saveAttachment } from './attachment-store.js';
 
 export const name = 'website';
-export const description = 'Create a website issue and assign Copilot to work on it';
+export const description = 'Create a website issue and have Moomie work on it';
 
 export async function execute(ctx: CommandContext, args: string): Promise<void> {
   if (!args) {
@@ -15,20 +16,15 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
   await ctx.deferReply();
 
   try {
-    // Upload attachments to the repo and collect permanent URLs
-    const uploadedFiles: { name: string; url: string; isImage: boolean }[] = [];
+    // Save attachments locally
+    const uploadedFiles: { name: string; fileName: string }[] = [];
     if (ctx.attachments && ctx.attachments.length > 0) {
-      const folder = '.github/issue-assets';
       for (const file of ctx.attachments) {
         try {
-          const url = await uploadAttachmentToRepo(file, folder);
-          uploadedFiles.push({
-            name: file.name,
-            url,
-            isImage: file.contentType?.startsWith('image/') ?? false,
-          });
+          const { fileName } = await saveAttachment(file);
+          uploadedFiles.push({ name: file.name, fileName });
         } catch (err) {
-          console.error(`Failed to upload attachment ${file.name}:`, err);
+          console.error(`Failed to save attachment ${file.name}:`, err);
         }
       }
     }
@@ -37,12 +33,9 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
     let body = `Requested via ${ctx.platform} by **${ctx.userName}**\n\n${args}`;
     if (uploadedFiles.length > 0) {
       body += '\n\n### Attachments\n';
+      body += '\nThese files are available in `.github/issue-assets/` in the workspace:\n';
       for (const file of uploadedFiles) {
-        if (file.isImage) {
-          body += `\n![${file.name}](${file.url})`;
-        } else {
-          body += `\n- [${file.name}](${file.url})`;
-        }
+        body += `\n- \`${file.fileName}\` (original: ${file.name})`;
       }
     }
 
@@ -50,7 +43,7 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
     const title = await generateIssueTitle(args);
 
     // Create tracking issue
-    const issue = await createIssueAndAssignCopilot({
+    const issue = await createIssue({
       title,
       body,
     });
@@ -59,6 +52,7 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
       channelId: ctx.channelId,
       userId: ctx.userId,
       platform: ctx.platform,
+      conversationRef: ctx.conversationRef,
     });
 
     await ctx.editReply(

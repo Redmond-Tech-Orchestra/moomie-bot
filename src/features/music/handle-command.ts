@@ -1,5 +1,5 @@
 import type { CommandContext } from '../../types.js';
-import { getMusicLink, setMusicLink } from './store.js';
+import { getMusicLink, setMusicLink } from './link-store.js';
 
 export const name = 'music';
 export const description = 'Get or set the link to the shared sheet music folder';
