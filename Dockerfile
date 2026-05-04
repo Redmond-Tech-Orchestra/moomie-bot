@@ -14,7 +14,7 @@ RUN npm run build
 # --- Production stage ---
 FROM node:22-alpine
 
-RUN apk add --no-cache sqlite
+RUN apk add --no-cache sqlite git
 
 WORKDIR /app
 
