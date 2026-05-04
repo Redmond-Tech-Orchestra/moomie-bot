@@ -8,6 +8,7 @@ import { runCodingTask, getQueueStatus } from './features/website/job-runner.js'
 import { startTeams } from './adapters/teams.js';
 import { getUploadsDir } from './features/website/attachment-store.js';
 import { initNotifications, notifyUser } from './adapters/index.js';
+import { PORT } from './config.js';
 
 interface WebhookRequest extends Request {
   rawBody?: Buffer;
@@ -90,7 +91,7 @@ export function startServer(discordClient: Client): express.Express {
   // Register Teams bot endpoint
   startTeams(app);
 
-  const port = process.env.PORT || 3000;
+  const port = PORT;
   app.listen(port, () => {
     console.log(`Server listening on port ${port}`);
   });

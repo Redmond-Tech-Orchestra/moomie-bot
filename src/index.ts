@@ -4,8 +4,8 @@ import { startServer } from './webhook-server.js';
 import { warmupRepo, forceResetQueue } from './features/website/job-runner.js';
 import { getDb } from './db.js';
 
-// ─── Validate required env vars ──────────────────────────────────────────────
-const required = ['DISCORD_TOKEN', 'DISCORD_CLIENT_ID', 'GITHUB_OWNER', 'GITHUB_REPO', 'GITHUB_APP_ID', 'GITHUB_APP_PRIVATE_KEY_PATH', 'GITHUB_APP_INSTALLATION_ID'];
+// ─── Validate required env vars (secrets only — non-secrets have defaults in config.ts) ──
+const required = ['DISCORD_TOKEN', 'GITHUB_APP_PRIVATE_KEY_PATH'];
 const missing = required.filter((k) => !process.env[k]);
 if (missing.length > 0) {
   console.error(`[Startup] Missing required env vars: ${missing.join(', ')}`);

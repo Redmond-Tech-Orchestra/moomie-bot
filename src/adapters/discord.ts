@@ -3,12 +3,17 @@ import type { ChatInputCommandInteraction } from 'discord.js';
 import { loadCommands } from '../commands/slash-commands.js';
 import { handlers } from '../commands/command-registry.js';
 import { initScheduler } from '../features/remind/scheduler.js';
+import { syncEvents, registerChannelWatcher } from '../features/tracker/event-watcher.js';
+import { autocompleteEvent } from '../features/tracker/autocomplete.js';
+import { registerConversationWatcher } from '../features/tracker/conversation-watcher.js';
 import type { CommandContext } from '../types.js';
 
 export const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages,
   ],
@@ -72,12 +77,24 @@ export async function startDiscord(): Promise<void> {
   // Load command definitions (for validation that commands are registered)
   await loadCommands();
 
-  client.once('ready', () => {
+  client.once('ready', async () => {
     console.log(`[Discord] Logged in as ${client.user!.tag}`);
     initScheduler();
+    registerChannelWatcher(client);
+    registerConversationWatcher(client);
+    await syncEvents(client);
   });
 
   client.on('interactionCreate', async (interaction) => {
+    // Handle autocomplete for the 'event' option
+    if (interaction.isAutocomplete()) {
+      const focused = interaction.options.getFocused(true);
+      if (focused.name === 'event') {
+        await autocompleteEvent(interaction);
+      }
+      return;
+    }
+
     if (!interaction.isChatInputCommand()) return;
 
     const handler = handlers.get(interaction.commandName);
@@ -91,6 +108,8 @@ export async function startDiscord(): Promise<void> {
       const rawArgs = interaction.options.getString('text')
         || interaction.options.getString('task')
         || interaction.options.getString('link')
+        || interaction.options.getString('window')
+        || interaction.options.getInteger('event')?.toString()
         || '';
 
       // Collect attachments from known option names

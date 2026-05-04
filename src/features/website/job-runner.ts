@@ -5,8 +5,9 @@ import { getOctokit, getInstallationToken } from './github-client.js';
 import { getAgent } from './agents/index.js';
 import type { AgentResult } from './agents/index.js';
 import { copyToWorkspace, deleteUploads } from './attachment-store.js';
+import { AGENT_WORKSPACE, GITHUB_OWNER, GITHUB_REPO } from '../../config.js';
 
-const WORKSPACE_DIR = path.resolve(process.env.AGENT_WORKSPACE || './workspace');
+const WORKSPACE_DIR = path.resolve(AGENT_WORKSPACE);
 const MAX_QUEUE_SIZE = 5;
 const JOB_TIMEOUT_MS = 35 * 60 * 1000; // 35 min (slightly above Gemini's 30 min hard cap)
 const JOB_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour — discard queued jobs older than this
@@ -98,20 +99,16 @@ function git(args: string[], cwd: string, stdin?: string): string {
 }
 
 function getRepoDir(): string {
-  const owner = process.env.GITHUB_OWNER!;
-  const repo = process.env.GITHUB_REPO!;
-  return path.join(WORKSPACE_DIR, `${owner}--${repo}`);
+  return path.join(WORKSPACE_DIR, `${GITHUB_OWNER}--${GITHUB_REPO}`);
 }
 
 async function cloneOrPull(): Promise<string> {
   const repoDir = getRepoDir();
-  const owner = process.env.GITHUB_OWNER!;
-  const repo = process.env.GITHUB_REPO!;
   const token = await getInstallationToken();
 
   if (!fs.existsSync(repoDir)) {
     fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
-    const cloneUrl = `https://github.com/${owner}/${repo}.git`;
+    const cloneUrl = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}.git`;
     execFileSync('git', ['clone', cloneUrl, repoDir], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
@@ -138,9 +135,7 @@ async function cloneOrPull(): Promise<string> {
 
 /** Configure git credential for the repo so push/pull uses the given token. */
 function setGitToken(repoDir: string, token: string): void {
-  const owner = process.env.GITHUB_OWNER!;
-  const repo = process.env.GITHUB_REPO!;
-  const url = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
+  const url = `https://x-access-token:${token}@github.com/${GITHUB_OWNER}/${GITHUB_REPO}.git`;
   git(['remote', 'set-url', 'origin', url], repoDir);
 }
 
@@ -234,8 +229,6 @@ export function runCodingTask(options: CodingTaskOptions): Promise<OrchestratorR
 async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResult> {
   const { task, title, issueNumber, requestedBy, attachments } = options;
   const prTitle = title || task.split('\n')[0].slice(0, 80);
-  const owner = process.env.GITHUB_OWNER!;
-  const repo = process.env.GITHUB_REPO!;
   const agent = getAgent();
 
   console.log(`[Orchestrator] Starting task with ${agent.name}: "${prTitle}"`);
@@ -326,8 +319,8 @@ async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResu
     ].filter(Boolean).join('\n');
 
     const { data: pr } = await octokit.pulls.create({
-      owner,
-      repo,
+      owner: GITHUB_OWNER,
+      repo: GITHUB_REPO,
       title: prTitle,
       body: prBody,
       head: branchName,
