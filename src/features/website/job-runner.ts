@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getOctokit } from './github-client.js';
+import { getOctokit, getInstallationToken } from './github-client.js';
 import { getAgent } from './agents/index.js';
 import type { AgentResult } from './agents/index.js';
 import { copyToWorkspace, deleteUploads } from './attachment-store.js';
@@ -103,16 +103,15 @@ function getRepoDir(): string {
   return path.join(WORKSPACE_DIR, `${owner}--${repo}`);
 }
 
-function cloneOrPull(): string {
+async function cloneOrPull(): Promise<string> {
   const repoDir = getRepoDir();
   const owner = process.env.GITHUB_OWNER!;
   const repo = process.env.GITHUB_REPO!;
+  const token = await getInstallationToken();
 
   if (!fs.existsSync(repoDir)) {
     fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
-    // Use GIT_ASKPASS to provide token without embedding in URL
     const cloneUrl = `https://github.com/${owner}/${repo}.git`;
-    const token = process.env.GITHUB_TOKEN || '';
     execFileSync('git', ['clone', cloneUrl, repoDir], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
@@ -127,12 +126,22 @@ function cloneOrPull(): string {
     git(['config', 'credential.helper', ''], repoDir);
     git(['remote', 'set-url', 'origin', cloneUrl], repoDir);
   } else {
+    // Set fresh token for pull
+    setGitToken(repoDir, token);
     git(['checkout', 'main'], repoDir);
     git(['reset', '--hard', 'origin/main'], repoDir);
     git(['pull', '--rebase'], repoDir);
   }
 
   return repoDir;
+}
+
+/** Configure git credential for the repo so push/pull uses the given token. */
+function setGitToken(repoDir: string, token: string): void {
+  const owner = process.env.GITHUB_OWNER!;
+  const repo = process.env.GITHUB_REPO!;
+  const url = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
+  git(['remote', 'set-url', 'origin', url], repoDir);
 }
 
 function cleanupLocalBranches(repoDir: string): void {
@@ -157,7 +166,7 @@ function cleanupLocalBranches(repoDir: string): void {
 export function warmupRepo(): void {
   warmupPromise = (async () => {
     try {
-      const repoDir = cloneOrPull();
+      const repoDir = await cloneOrPull();
       cleanupLocalBranches(repoDir);
       console.log(`[Orchestrator] Repo ready at ${repoDir}`);
     } catch (err) {
@@ -234,7 +243,7 @@ async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResu
   // 1. Ensure repo is up to date
   let repoDir: string;
   try {
-    repoDir = cloneOrPull();
+    repoDir = await cloneOrPull();
   } catch (err) {
     return { success: false, error: `Failed to set up repo: ${err}` };
   }
@@ -292,6 +301,9 @@ async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResu
       : `${prTitle}\n\nRequested by ${requestedBy}`;
     // Use -F - to pass commit message via stdin (avoids shell injection)
     git(['commit', '-F', '-'], repoDir, commitMsg);
+    // Refresh token before push (installation tokens expire after ~1hr)
+    const pushToken = await getInstallationToken();
+    setGitToken(repoDir, pushToken);
     git(['push', 'origin', branchName, '--force'], repoDir);
   } catch (err) {
     git(['checkout', 'main'], repoDir);

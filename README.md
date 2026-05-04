@@ -110,12 +110,6 @@ docker compose up -d bot
 | `GITHUB_APP_PRIVATE_KEY_PATH` | Path to `.pem` private key |
 | `GITHUB_APP_INSTALLATION_ID` | Installation ID for the org |
 
-**Personal Access Token (simpler for dev):**
-
-| Variable | Description |
-|----------|-------------|
-| `GITHUB_TOKEN` | Fine-grained PAT with `issues:write`, `contents:write`, `pull_requests:write` |
-
 ### Optional
 
 | Variable | Default | Description |
