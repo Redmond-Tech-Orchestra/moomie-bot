@@ -2,7 +2,7 @@ import { SlashCommandBuilder } from 'discord.js';
 
 export const data = new SlashCommandBuilder()
   .setName('website')
-  .setDescription('Create a website issue and assign Copilot to work on it')
+  .setDescription('Create a website issue and have Moomie work on it')
   .addStringOption((option) =>
     option
       .setName('task')

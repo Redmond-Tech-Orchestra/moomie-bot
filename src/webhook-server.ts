@@ -2,10 +2,12 @@ import crypto from 'node:crypto';
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import type { Client } from 'discord.js';
-import { getTrackedIssue, untrackIssue } from './features/website/tracker.js';
-import { isOrgMember } from './features/website/github.js';
-import { runCodingTask } from './features/website/orchestrator.js';
+import { getTrackedIssue, untrackIssue } from './features/website/issue-tracker.js';
+import { isOrgMember } from './features/website/github-client.js';
+import { runCodingTask, getQueueStatus } from './features/website/job-runner.js';
 import { startTeams } from './adapters/teams.js';
+import { getUploadsDir } from './features/website/attachment-store.js';
+import { initNotifications, notifyUser } from './adapters/index.js';
 
 interface WebhookRequest extends Request {
   rawBody?: Buffer;
@@ -13,6 +15,12 @@ interface WebhookRequest extends Request {
 
 export function startServer(discordClient: Client): express.Express {
   const app = express();
+
+  // Initialize the shared notification service
+  initNotifications(discordClient);
+
+  // Serve uploaded attachments
+  app.use('/uploads', express.static(getUploadsDir()));
 
   app.use(express.json({
     verify: (req: WebhookRequest, _res, buf) => { req.rawBody = buf; },
@@ -49,7 +57,7 @@ export function startServer(discordClient: Client): express.Express {
     const payload = req.body;
 
     if (event === 'issues' && payload.action === 'labeled') {
-      await handleIssueLabelAdded(payload, discordClient);
+      await handleIssueLabelAdded(payload);
     }
 
     if (event === 'issues' && payload.action === 'unlabeled') {
@@ -57,11 +65,27 @@ export function startServer(discordClient: Client): express.Express {
     }
 
     if (event === 'pull_request' && payload.action === 'opened') {
-      await handlePullRequest(payload.pull_request, discordClient);
+      await handlePullRequest(payload.pull_request);
     }
 
     res.sendStatus(200);
   });
+
+  // ─── Admin/Health Endpoints ─────────────────────────────────────────────────
+
+  app.get('/status', (_req: Request, res: Response) => {
+    const status = getQueueStatus();
+    res.json({
+      ok: true,
+      queue: {
+        running: status.running,
+        queued: status.queued,
+        runningForMin: status.runningForMs ? Math.round(status.runningForMs / 60000) : null,
+      },
+    });
+  });
+
+
 
   // Register Teams bot endpoint
   startTeams(app);
@@ -74,7 +98,9 @@ export function startServer(discordClient: Client): express.Express {
   return app;
 }
 
-async function handlePullRequest(pr: { body?: string; html_url: string }, discordClient: Client): Promise<void> {
+// ─── Webhook Handlers ─────────────────────────────────────────────────────────
+
+async function handlePullRequest(pr: { body?: string; html_url: string }): Promise<void> {
   const issueRefs = pr.body?.matchAll(/(?:closes|fixes|resolves)\s+#(\d+)/gi);
   if (!issueRefs) return;
 
@@ -84,15 +110,10 @@ async function handlePullRequest(pr: { body?: string; html_url: string }, discor
     if (!tracked) continue;
 
     try {
-      const channel = await discordClient.channels.fetch(tracked.channelId);
-      if (channel && 'send' in channel) {
-        await channel.send(
-          `<@${tracked.userId}> PR is ready for issue #${issueNumber}: ${pr.html_url}`
-        );
-      }
+      await notifyUser(tracked, `PR is ready for issue #${issueNumber}: ${pr.html_url}`);
       untrackIssue(issueNumber);
     } catch (err) {
-      console.error(`Failed to notify Discord for issue #${issueNumber}:`, err);
+      console.error(`Failed to notify user for issue #${issueNumber}:`, err);
     }
   }
 }
@@ -101,7 +122,6 @@ const TRIGGER_LABEL = 'moomie-bot';
 
 async function handleIssueLabelAdded(
   payload: { issue: { number: number; title: string; body?: string; html_url: string }; label: { name: string }; sender: { login: string } },
-  discordClient: Client,
 ): Promise<void> {
   if (payload.label.name !== TRIGGER_LABEL) return;
 
@@ -115,54 +135,49 @@ async function handleIssueLabelAdded(
 
   console.log(`[Webhook] Label "${TRIGGER_LABEL}" added to #${issue.number} by ${sender.login}`);
 
-  // Notify Discord if tracked
+  // Notify initiator if tracked
   const tracked = getTrackedIssue(issue.number);
   if (tracked) {
     try {
-      const channel = await discordClient.channels.fetch(tracked.channelId);
-      if (channel && 'send' in channel) {
-        await channel.send(
-          `<@${tracked.userId}> Moomie is working on issue #${issue.number}: ${issue.html_url}`
-        );
-      }
+      await notifyUser(tracked, `Moomie is working on issue #${issue.number}: ${issue.html_url}`);
     } catch (err) {
-      console.error(`[Webhook] Failed to notify Discord for #${issue.number}:`, err);
+      console.error(`[Webhook] Failed to notify user for #${issue.number}:`, err);
     }
   }
 
   // Trigger the coding agent
+  // Parse attachment filenames from issue body (format: `- \`filename\` (original: ...)`)
+  const attachments: string[] = [];
+  if (issue.body) {
+    const matches = issue.body.matchAll(/^- `([^`]+)`\s*\(original:/gm);
+    for (const match of matches) {
+      attachments.push(match[1]);
+    }
+  }
+
   runCodingTask({
     title: issue.title,
     task: issue.title + (issue.body ? `\n\n${issue.body}` : ''),
     issueNumber: issue.number,
-    referenceFiles: [],
     requestedBy: sender.login,
+    attachments: attachments.length > 0 ? attachments : undefined,
   }).then(async (result) => {
     if (result.success) {
       console.log(`[Webhook] PR created for #${issue.number}: ${result.prUrl}`);
       if (tracked) {
         try {
-          const channel = await discordClient.channels.fetch(tracked.channelId);
-          if (channel && 'send' in channel) {
-            await channel.send(
-              `<@${tracked.userId}> PR ready for issue #${issue.number}: ${result.prUrl}`
-            );
-          }
+          await notifyUser(tracked, `PR ready for issue #${issue.number}: ${result.prUrl}`);
         } catch (err) {
-          console.error(`[Webhook] Failed to notify Discord for PR on #${issue.number}:`, err);
+          console.error(`[Webhook] Failed to notify user for PR on #${issue.number}:`, err);
         }
       }
     } else {
       console.error(`[Webhook] Agent failed for #${issue.number}: ${result.error}`);
       if (tracked) {
         try {
-          const channel = await discordClient.channels.fetch(tracked.channelId);
-          if (channel && 'send' in channel) {
-            const msg = `<@${tracked.userId}> Agent couldn't complete #${issue.number}: ${result.error}`;
-            await channel.send(msg.slice(0, 2000));
-          }
+          await notifyUser(tracked, `Agent couldn't complete #${issue.number}: ${result.error}`);
         } catch (err) {
-          console.error(`[Webhook] Failed to notify Discord for failure on #${issue.number}:`, err);
+          console.error(`[Webhook] Failed to notify user for failure on #${issue.number}:`, err);
         }
       }
     }

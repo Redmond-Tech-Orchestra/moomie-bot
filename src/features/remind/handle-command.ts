@@ -24,6 +24,8 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
   addReminder({
     userId: remindUserId,
     channelId: remindChannelId,
+    platform: ctx.platform,
+    conversationRef: ctx.conversationRef,
     message: result.message,
     triggerAt: result.date.getTime(),
   });

@@ -12,8 +12,6 @@
 export interface AgentTask {
   /** Natural language description of what to do */
   prompt: string;
-  /** Paths to any reference files (uploaded attachments already in the repo) */
-  referenceFiles?: string[];
 }
 
 export interface AgentResult {

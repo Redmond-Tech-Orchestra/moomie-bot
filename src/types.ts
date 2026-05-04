@@ -24,6 +24,8 @@ export interface CommandContext {
   targetUserId?: string;
   targetChannelId?: string;
   attachments?: Attachment[];
+  // Teams proactive messaging reference (serialized JSON)
+  conversationRef?: string;
   // Permissions
   hasRole?: (roleNameOrId: string) => boolean;
   reply: (text: string) => Promise<void>;

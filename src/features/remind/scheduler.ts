@@ -1,6 +1,6 @@
 import * as chrono from 'chrono-node';
-import type { Client } from 'discord.js';
 import { getDb, registerMigration } from '../../db.js';
+import { notifyUser } from '../../adapters/index.js';
 
 registerMigration((db) => {
   db.exec(`
@@ -8,6 +8,8 @@ registerMigration((db) => {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
       channel_id TEXT NOT NULL,
+      platform TEXT NOT NULL DEFAULT 'discord',
+      conversation_ref TEXT,
       message TEXT NOT NULL,
       trigger_at INTEGER NOT NULL
     );
@@ -18,6 +20,8 @@ registerMigration((db) => {
 interface Reminder {
   userId: string;
   channelId: string;
+  platform: 'discord' | 'teams';
+  conversationRef?: string;
   message: string;
   triggerAt: number;
 }
@@ -28,29 +32,35 @@ interface ParsedReminder {
 }
 
 let nextTimer: ReturnType<typeof setTimeout> | null = null;
-let discordClient: Client | null = null;
 
-export function initScheduler(client: Client): void {
-  discordClient = client;
+export function initScheduler(): void {
   scheduleNext();
 }
 
 export function addReminder(reminder: Reminder): void {
   const db = getDb();
   db.prepare(
-    `INSERT INTO reminders (user_id, channel_id, message, trigger_at) VALUES (?, ?, ?, ?)`
-  ).run(reminder.userId, reminder.channelId, reminder.message, reminder.triggerAt);
+    `INSERT INTO reminders (user_id, channel_id, platform, conversation_ref, message, trigger_at) VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(reminder.userId, reminder.channelId, reminder.platform, reminder.conversationRef ?? null, reminder.message, reminder.triggerAt);
   scheduleNext();
 }
 
 function getNextReminder(): (Reminder & { id: number }) | undefined {
   const db = getDb();
   const row = db.prepare(
-    `SELECT id, user_id, channel_id, message, trigger_at FROM reminders ORDER BY trigger_at ASC LIMIT 1`
-  ).get() as { id: number; user_id: string; channel_id: string; message: string; trigger_at: number } | undefined;
+    `SELECT id, user_id, channel_id, platform, conversation_ref, message, trigger_at FROM reminders ORDER BY trigger_at ASC LIMIT 1`
+  ).get() as { id: number; user_id: string; channel_id: string; platform: string; conversation_ref: string | null; message: string; trigger_at: number } | undefined;
 
   if (!row) return undefined;
-  return { id: row.id, userId: row.user_id, channelId: row.channel_id, message: row.message, triggerAt: row.trigger_at };
+  return {
+    id: row.id,
+    userId: row.user_id,
+    channelId: row.channel_id,
+    platform: row.platform as 'discord' | 'teams',
+    conversationRef: row.conversation_ref ?? undefined,
+    message: row.message,
+    triggerAt: row.trigger_at,
+  };
 }
 
 function deleteReminder(id: number): void {
@@ -75,10 +85,15 @@ function scheduleNext(): void {
 
 async function fire(reminder: Reminder): Promise<void> {
   try {
-    const channel = await discordClient!.channels.fetch(reminder.channelId);
-    if (channel && 'send' in channel) {
-      await channel.send(`<@${reminder.userId}> Reminder: ${reminder.message}`);
-    }
+    await notifyUser(
+      {
+        platform: reminder.platform,
+        channelId: reminder.channelId,
+        userId: reminder.userId,
+        conversationRef: reminder.conversationRef,
+      },
+      `Reminder: ${reminder.message}`,
+    );
   } catch (err) {
     console.error('Failed to send reminder:', err);
   }

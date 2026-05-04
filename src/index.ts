@@ -1,11 +1,11 @@
 import 'dotenv/config';
 import { startDiscord, client } from './adapters/discord.js';
-import { startServer } from './server.js';
-import { warmupRepo } from './features/website/orchestrator.js';
+import { startServer } from './webhook-server.js';
+import { warmupRepo, forceResetQueue } from './features/website/job-runner.js';
 import { getDb } from './db.js';
 
 // ─── Validate required env vars ──────────────────────────────────────────────
-const required = ['DISCORD_TOKEN', 'DISCORD_CLIENT_ID', 'GITHUB_OWNER', 'GITHUB_REPO'];
+const required = ['DISCORD_TOKEN', 'DISCORD_CLIENT_ID', 'GITHUB_OWNER', 'GITHUB_REPO', 'GITHUB_APP_ID', 'GITHUB_APP_PRIVATE_KEY_PATH', 'GITHUB_APP_INSTALLATION_ID'];
 const missing = required.filter((k) => !process.env[k]);
 if (missing.length > 0) {
   console.error(`[Startup] Missing required env vars: ${missing.join(', ')}`);
@@ -33,3 +33,7 @@ function shutdown(signal: string) {
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGUSR1', () => {
+  const { drained } = forceResetQueue();
+  console.log(`[Admin] SIGUSR1 received — queue reset, ${drained} job(s) drained`);
+});
