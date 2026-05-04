@@ -9,7 +9,7 @@ import * as chrono from 'chrono-node';
 export const name = 'digest';
 export const description = 'Structured summary of recent server activity';
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 const DEFAULT_WINDOW = '1 week ago';
 const MAX_CONTEXT_CHARS = 80_000; // Stay well under Gemini's context window
 

@@ -136,7 +136,7 @@ export function getStaleItems(staleDays: number = 14): TrackerItem[] {
     .all(`-${staleDays} days`) as TrackerItem[];
 }
 
-export function createItem(item: { event_id: number; description: string; owner_id?: string; owner_name?: string; target_date?: string; source: string; source_channel?: string; source_date?: string }): number {
+export function createItem(item: { event_id: number | null; description: string; owner_id?: string; owner_name?: string; target_date?: string; source: string; source_channel?: string; source_date?: string }): number {
   const result = getDb()
     .prepare(`INSERT INTO items (event_id, description, owner_id, owner_name, target_date, source, source_channel, source_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(item.event_id, item.description, item.owner_id ?? null, item.owner_name ?? null, item.target_date ?? null, item.source, item.source_channel ?? null, item.source_date ?? null);
@@ -153,4 +153,20 @@ export function markItemStale(id: number): void {
 
 export function updateItemLastMentioned(id: number): void {
   getDb().prepare(`UPDATE items SET last_mentioned = datetime('now') WHERE id = ?`).run(id);
+}
+
+export function getOrphanItems(): TrackerItem[] {
+  return getDb()
+    .prepare(`SELECT * FROM items WHERE event_id IS NULL AND status != 'done' ORDER BY created_at`)
+    .all() as TrackerItem[];
+}
+
+export function getAllOpenItems(): TrackerItem[] {
+  return getDb()
+    .prepare(`SELECT * FROM items WHERE status = 'open' ORDER BY event_id, created_at`)
+    .all() as TrackerItem[];
+}
+
+export function updateItemDescription(id: number, description: string): void {
+  getDb().prepare(`UPDATE items SET description = ? WHERE id = ?`).run(description, id);
 }
