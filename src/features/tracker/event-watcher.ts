@@ -8,7 +8,7 @@ import {
   archiveEvent,
   getAllEvents,
 } from './store.js';
-import { PERFORMANCES_CATEGORY_ID, ARCHIVED_CATEGORY_ID } from '../../config.js';
+import { PERFORMANCES_CATEGORY_ID, ARCHIVED_CATEGORY_ID, DISCORD_GUILD_ID } from '../../config.js';
 
 /**
  * Run on startup: sync all channels in the Performances category to the events table.
@@ -19,10 +19,12 @@ export async function syncEvents(client: Client): Promise<void> {
     return;
   }
 
-  const guild = client.guilds.cache.first();
+  const guild = client.guilds.cache.get(DISCORD_GUILD_ID);
   if (!guild) return;
 
-  const category = guild.channels.cache.get(PERFORMANCES_CATEGORY_ID);
+  // Fetch to avoid empty-cache race on startup
+  const category = guild.channels.cache.get(PERFORMANCES_CATEGORY_ID)
+    ?? await guild.channels.fetch(PERFORMANCES_CATEGORY_ID).catch(() => null);
   if (!category || category.type !== ChannelType.GuildCategory) {
     console.warn('[Tracker] Performances category not found');
     return;
