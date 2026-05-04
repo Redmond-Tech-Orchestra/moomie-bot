@@ -7,3 +7,5 @@
 
 export { notifyUser, initNotifications } from './notify.js';
 export type { NotificationTarget } from './notify.js';
+export { getRecentMessages } from './messages.js';
+export type { ChannelMessages } from './messages.js';

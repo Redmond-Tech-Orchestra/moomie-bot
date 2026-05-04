@@ -91,6 +91,7 @@ export async function startDiscord(): Promise<void> {
       const rawArgs = interaction.options.getString('text')
         || interaction.options.getString('task')
         || interaction.options.getString('link')
+        || interaction.options.getString('window')
         || '';
 
       // Collect attachments from known option names
