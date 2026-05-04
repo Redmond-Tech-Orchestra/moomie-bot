@@ -38,25 +38,6 @@ registerMigration((db) => {
       note TEXT NOT NULL,
       created_at TEXT DEFAULT (datetime('now'))
     );
-
-    CREATE TABLE IF NOT EXISTS milestone_templates (
-      id INTEGER PRIMARY KEY,
-      description TEXT NOT NULL,
-      offset_days INTEGER NOT NULL,
-      default_role TEXT
-    );
-
-    -- Seed milestone templates if empty
-    INSERT OR IGNORE INTO milestone_templates (id, description, offset_days, default_role) VALUES
-      (1, 'Venue confirmed', 112, 'logistics'),
-      (2, 'Music selected / scores distributed', 84, 'librarian'),
-      (3, 'Rehearsal schedule published', 70, 'logistics'),
-      (4, 'Tickets available', 56, 'marketing'),
-      (5, 'Marketing in full swing', 42, 'marketing'),
-      (6, 'Concert program draft', 28, 'librarian'),
-      (7, 'Day-of logistics finalized', 14, 'logistics'),
-      (8, 'Final rehearsal', 7, NULL),
-      (9, 'Event day', 0, NULL);
   `);
 });
 
@@ -172,38 +153,4 @@ export function markItemStale(id: number): void {
 
 export function updateItemLastMentioned(id: number): void {
   getDb().prepare(`UPDATE items SET last_mentioned = datetime('now') WHERE id = ?`).run(id);
-}
-
-// ─── Milestone Templates ─────────────────────────────────────────────────────
-
-export interface MilestoneTemplate {
-  id: number;
-  description: string;
-  offset_days: number;
-  default_role: string | null;
-}
-
-export function getMilestoneTemplates(): MilestoneTemplate[] {
-  return getDb()
-    .prepare(`SELECT * FROM milestone_templates ORDER BY offset_days DESC`)
-    .all() as MilestoneTemplate[];
-}
-
-export function generateMilestonesForEvent(eventId: number, eventDate: string): void {
-  const templates = getMilestoneTemplates();
-  const baseDate = new Date(eventDate + 'T00:00:00');
-  const insert = getDb().prepare(
-    `INSERT INTO items (event_id, description, target_date, source) VALUES (?, ?, ?, 'template')`
-  );
-
-  const insertMany = getDb().transaction(() => {
-    for (const tmpl of templates) {
-      const target = new Date(baseDate);
-      target.setDate(target.getDate() - tmpl.offset_days);
-      const targetStr = target.toISOString().slice(0, 10);
-      insert.run(eventId, tmpl.description, targetStr);
-    }
-  });
-
-  insertMany();
 }

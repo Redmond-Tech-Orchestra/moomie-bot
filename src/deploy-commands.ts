@@ -1,13 +1,14 @@
 import { REST, Routes } from 'discord.js';
 import { loadCommands } from './commands/slash-commands.js';
+import { DISCORD_CLIENT_ID, DISCORD_GUILD_ID } from './config.js';
 import 'dotenv/config';
 
 const commands = await loadCommands();
 const commandData = commands.map((c) => c.data.toJSON());
 
 const rest = new REST().setToken(process.env.DISCORD_TOKEN!);
-const clientId = process.env.DISCORD_CLIENT_ID!;
-const guildId = process.env.DISCORD_GUILD_ID;
+const clientId = DISCORD_CLIENT_ID;
+const guildId = DISCORD_GUILD_ID;
 
 try {
   if (guildId) {

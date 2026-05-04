@@ -2,7 +2,8 @@ import type { CommandContext } from '../../types.js';
 import { getRecentMessages } from '../../adapters/index.js';
 import type { ChannelMessages } from '../../adapters/index.js';
 import { loadPrompt } from '../../prompts/load-prompt.js';
-import { getActiveEvents } from '../tracker/store.js';
+import { getActiveEvents, getOpenItemsForEvent } from '../tracker/store.js';
+import { DISCORD_GUILD_ID } from '../../config.js';
 import * as chrono from 'chrono-node';
 
 export const name = 'digest';
@@ -22,7 +23,7 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
 
   await ctx.deferReply();
 
-  const guildId = process.env.DISCORD_GUILD_ID;
+  const guildId = DISCORD_GUILD_ID;
   if (!guildId) {
     await ctx.editReply('DISCORD_GUILD_ID is not configured.');
     return;
@@ -103,8 +104,21 @@ async function callGemini(transcript: string, window: string): Promise<string> {
       }).join('\n')
     : 'No upcoming events currently tracked.';
 
+  const openItemsSections: string[] = [];
+  for (const e of events) {
+    const items = getOpenItemsForEvent(e.id);
+    if (items.length === 0) continue;
+    openItemsSections.push(`Open items for ${e.name}:\n` + items.map((i) =>
+      `- ${i.description}${i.owner_name ? ` (owner: ${i.owner_name})` : ''}${i.status === 'stale' ? ' [STALE]' : ''}`
+    ).join('\n'));
+  }
+  const openItemsContext = openItemsSections.length > 0
+    ? openItemsSections.join('\n\n')
+    : 'No open items currently tracked.';
+
   const systemPrompt = loadPrompt('digest-system.md', {
     EVENTS_CONTEXT: eventsContext,
+    OPEN_ITEMS_CONTEXT: openItemsContext,
   });
 
   try {

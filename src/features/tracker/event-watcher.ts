@@ -6,12 +6,9 @@ import {
   createEvent,
   confirmEvent,
   archiveEvent,
-  generateMilestonesForEvent,
   getAllEvents,
 } from './store.js';
-
-const PERFORMANCES_CATEGORY_ID = process.env.PERFORMANCES_CATEGORY_ID;
-const ARCHIVED_CATEGORY_ID = process.env.ARCHIVED_CATEGORY_ID;
+import { PERFORMANCES_CATEGORY_ID, ARCHIVED_CATEGORY_ID } from '../../config.js';
 
 /**
  * Run on startup: sync all channels in the Performances category to the events table.
@@ -200,8 +197,7 @@ function formatDisplayDate(isoDate: string): string {
  * Handle a ✅ reaction on a confirmation message to finalize the event.
  * Called from the reaction collector setup (to be wired in later phase).
  */
-export function onEventConfirmed(eventId: number, eventDate: string): void {
+export function onEventConfirmed(eventId: number, _eventDate: string): void {
   confirmEvent(eventId);
-  generateMilestonesForEvent(eventId, eventDate);
-  console.log(`[Tracker] Event ${eventId} confirmed — milestones generated`);
+  console.log(`[Tracker] Event ${eventId} confirmed`);
 }

@@ -5,6 +5,7 @@ import { handlers } from '../commands/command-registry.js';
 import { initScheduler } from '../features/remind/scheduler.js';
 import { syncEvents, registerChannelWatcher } from '../features/tracker/event-watcher.js';
 import { autocompleteEvent } from '../features/tracker/autocomplete.js';
+import { registerConversationWatcher } from '../features/tracker/conversation-watcher.js';
 import type { CommandContext } from '../types.js';
 
 export const client = new Client({
@@ -80,6 +81,7 @@ export async function startDiscord(): Promise<void> {
     console.log(`[Discord] Logged in as ${client.user!.tag}`);
     initScheduler();
     registerChannelWatcher(client);
+    registerConversationWatcher(client);
     await syncEvents(client);
   });
 

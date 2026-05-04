@@ -1,11 +1,12 @@
 import type { CommandContext } from '../../types.js';
 import { getMusicLink, setMusicLink } from './link-store.js';
+import { MUSIC_ADMIN_ROLE, BOT_OWNER_ID } from '../../config.js';
 
 export const name = 'music';
 export const description = 'Get or set the link to the shared sheet music folder';
 
-const ALLOWED_ROLE = process.env.MUSIC_ADMIN_ROLE || 'Librarian';
-const OWNER_ID = process.env.BOT_OWNER_ID || '';
+const ALLOWED_ROLE = MUSIC_ADMIN_ROLE;
+const OWNER_ID = BOT_OWNER_ID;
 
 export async function execute(ctx: CommandContext, args: string): Promise<void> {
   // If args provided, treat as "set" operation

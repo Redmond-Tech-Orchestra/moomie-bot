@@ -1,5 +1,6 @@
 import type { CodingAgent } from './agent-types.js';
 import { GeminiAgent } from './gemini-cli.js';
+import { CODING_AGENT } from '../../../config.js';
 
 export type { CodingAgent, AgentTask, AgentResult } from './agent-types.js';
 
@@ -8,7 +9,7 @@ export type { CodingAgent, AgentTask, AgentResult } from './agent-types.js';
  * Set CODING_AGENT env var to switch: "gemini" | "claude" | "codex"
  */
 export function getAgent(): CodingAgent {
-  const agentName = process.env.CODING_AGENT || 'gemini';
+  const agentName = CODING_AGENT;
 
   switch (agentName) {
     case 'gemini':

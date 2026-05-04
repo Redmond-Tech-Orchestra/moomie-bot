@@ -33,7 +33,6 @@ Things people said they'd do get lost in chat. No one has a single view of "what
 - **Extract commitments from conversation**, don't ask people to file tickets
 - **Surface what's falling through cracks**, don't generate busywork
 - **Respect volunteer time** — no nagging, no daily rituals
-- **Manual input is a smell** — if `/track` is used often, that's a signal the auto-extraction needs improvement
 
 ---
 
@@ -90,7 +89,6 @@ If no event is specified, shows a brief overview of all active events (just coun
 **Not a GitHub Projects board view.** Instead, Moomie maintains its own lightweight tracker (SQLite) populated **automatically** from:
 1. Commitments extracted from conversation (burst detection) — the primary source
 2. Event milestones auto-generated when a new Performances channel appears
-3. Items from `/track` — rare fallback for things Moomie missed
 
 **Output:**
 ```
@@ -110,33 +108,6 @@ If no event is specified, shows a brief overview of all active events (just coun
 ...
 ```
 
-### `/track <description> [concert] [owner]`
-
-**Escape hatch** — manually add an item that Moomie didn't catch. This should be rare; if people are using `/track` frequently, it means the burst detection or confirmation flow needs tuning.
-
-```
-/track Catering plan for 7/16 dinner break event:Shakespeare owner:@jada
-/track Ask Joshua about November venue availability event:Fall owner:@rachel
-```
-
-The `event` option uses autocomplete (same as `/board`). If omitted, Moomie infers from context or asks.
-
-### `/checkin [event]`
-
-**Rarely needed.** Moomie automatically detects completion from conversation (see [Automatic Completion Detection](#automatic-completion-detection)). This command exists as a fallback for items that were completed offline or in DMs.
-
-Shows the user their open items and lets them mark things done:
-```
-You have 3 open items for Shakespeare (Jul 16):
-1. ⏳ Sectional coaching
-2. ⏳ Group strings (target: first week of May)
-3. ⬜ Concert program layout
-
-Reply with numbers to mark done, or "skip":
-```
-
-Like `/track`, frequent use of `/checkin` signals the auto-detection needs improvement.
-
 ### `/events`
 
 List upcoming events with dates and T-minus:
@@ -144,24 +115,6 @@ List upcoming events with dates and T-minus:
 🎭 Shakespeare — Jul 16 (T-7 weeks)
 🎵 Concerto Competition — Aug 1 (T-12 weeks)
 🌳 Redmond Park — Sep 5 (T-17 weeks)
-```
-
-### `/nudge [event]`
-
-*(Admin/team-lead only)* Event option uses autocomplete.
-
-Identify items that are stale or overdue and tag owners:
-```
-## Needs Attention — Shakespeare (Jul 16)
-
-⚠️ Tickets were supposed to be available at T-8 (May 21) — no update
-   Owner: unassigned → @nandydrew (marketing)?
-
-⚠️ Catering plan mentioned 4/30, no follow-up (4 days)
-   Owner: unassigned
-
-⏰ Flute/brass coaching — waiting on Vicky since 4/19 (2 weeks)
-   Owner: @peter
 ```
 
 ---
@@ -354,7 +307,7 @@ Same item? Reply "same" to skip, or "new" to track separately.
 | Source | De-dupe behavior |
 |--------|-----------------|
 | Burst extraction | Part of the same Gemini call — open items are in context, so Gemini avoids re-extracting them |
-| `/track` | Quick LLM check before adding; warn the user inline if duplicate |
+
 | Milestone templates | Exact-match on description + event_id (idempotent on restart) |
 | `/digest` extraction | Same as burst extraction |
 
@@ -606,9 +559,6 @@ This keeps the prompts as the **single source of truth** for extraction logic �
 | 4 | `/board` command (event-centric view) | Medium |
 | 5 | Milestone templates + auto-generation on event confirm | Small |
 | 6 | Enhance `/digest` with event mapping + commitment extraction | Medium |
-| 7 | `/track` command (manual item creation) | Small |
-| 8 | `/checkin` command (personal status updates) | Medium |
-| 9 | `/nudge` command (stale/overdue detection) | Small |
 
 ---
 
@@ -616,7 +566,6 @@ This keeps the prompts as the **single source of truth** for extraction logic �
 
 1. ~~**Concert channel naming**~~ — Resolved: auto-detect from Performances category, parse date from channel name, confirm in-channel before committing
 2. ~~**Commitment extraction confidence**~~ — Resolved: Moomie asks clarifying questions for ambiguous items, auto-tracks confident ones after ✅ or 24hr timeout
-3. **Nudge permissions** — anyone can nudge, or only admin/team-lead roles?
-4. **Archive trigger** — when a channel moves to Archived category, auto-mark event + items as done?
+3. **Archive trigger** — when a channel moves to Archived category, auto-mark event + items as done?
 5. **Future events mentioned in chat** — if someone mentions "November concert" but no channel exists yet, should Moomie flag it as "planned but not yet created"?
 
