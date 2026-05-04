@@ -87,9 +87,17 @@ export function startServer(discordClient: Client): express.Express {
 
   app.post('/admin/reset-queue', (req: Request, res: Response) => {
     const secret = process.env.ADMIN_SECRET;
-    if (!secret || req.headers['x-admin-secret'] !== secret) {
+    if (!secret) return res.status(401).json({ error: 'Unauthorized' });
+
+    const provided = req.headers['x-admin-secret'] as string | undefined;
+    if (!provided) return res.status(401).json({ error: 'Unauthorized' });
+
+    const secretBuf = Buffer.from(secret);
+    const providedBuf = Buffer.from(provided);
+    if (secretBuf.length !== providedBuf.length || !crypto.timingSafeEqual(secretBuf, providedBuf)) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
+
     const result = forceResetQueue();
     res.json({ ok: true, drained: result.drained });
   });

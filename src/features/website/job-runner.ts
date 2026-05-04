@@ -52,33 +52,36 @@ async function processQueue(): Promise<void> {
   currentJobStart = Date.now();
 
   const job = queue.shift()!;
+  let timedOut = false;
 
-  // Hard timeout: if the job doesn't finish in time, force-resolve it
-  const timeout = setTimeout(() => {
-    if (running) {
-      console.error(`[JobRunner] Job #${job.options.issueNumber || '?'} timed out after ${JOB_TIMEOUT_MS / 60000}min — force-clearing`);
-      running = false;
-      currentJobStart = null;
-      job.resolve({ success: false, error: 'Job timed out and was force-cleared.' });
-      if (job.options.attachments?.length) deleteUploads(job.options.attachments);
-      processQueue();
-    }
-  }, JOB_TIMEOUT_MS);
+  // Hard timeout: race against the job execution
+  const timeoutPromise = new Promise<OrchestratorResult>((resolve) => {
+    setTimeout(() => {
+      timedOut = true;
+      console.error(`[JobRunner] Job #${job.options.issueNumber || '?'} timed out after ${JOB_TIMEOUT_MS / 60000}min`);
+      resolve({ success: false, error: 'Job timed out and was force-cleared.' });
+    }, JOB_TIMEOUT_MS);
+  });
 
   try {
-    const result = await executeTask(job.options);
-    clearTimeout(timeout);
+    const result = await Promise.race([executeTask(job.options), timeoutPromise]);
     job.resolve(result);
   } catch (err) {
-    clearTimeout(timeout);
     job.reject(err instanceof Error ? err : new Error(String(err)));
   } finally {
-    // Clean up uploaded attachments
     if (job.options.attachments?.length) {
       deleteUploads(job.options.attachments);
     }
     running = false;
     currentJobStart = null;
+    // If timed out, reset the workspace to prevent stale state for next job
+    if (timedOut) {
+      try {
+        const repoDir = getRepoDir();
+        git(['checkout', 'main'], repoDir);
+        git(['reset', '--hard', 'origin/main'], repoDir);
+      } catch { /* best effort */ }
+    }
     processQueue();
   }
 }
