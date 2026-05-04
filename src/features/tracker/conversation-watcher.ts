@@ -1,5 +1,5 @@
 import type { Client, Message, TextChannel } from 'discord.js';
-import { ChannelType } from 'discord.js';
+import { ChannelType, MessageFlags } from 'discord.js';
 import { loadPrompt } from '../../prompts/load-prompt.js';
 import { ARCHIVED_CATEGORY_ID } from '../../config.js';
 import {
@@ -14,8 +14,8 @@ import {
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
-const QUIET_GAP_MS = 10 * 60 * 1000;         // 10 minutes of silence triggers extraction
-const MIN_MESSAGES = 5;                        // Minimum messages to process a burst
+const QUIET_GAP_MS = 2 * 60 * 60 * 1000;          // 2 hours of silence triggers extraction
+const MIN_MESSAGES = 1;                        // Process any non-empty burst
 const MAX_BUFFER = 50;                         // Oldest messages roll off past this
 const RATE_LIMIT_MS = 60 * 60 * 1000;         // Max 1 extraction per channel per hour
 const CONFIRMATION_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours to respond
@@ -194,6 +194,17 @@ async function onQuiet(channelId: string): Promise<void> {
   }
 }
 
+/** Midnight–8am Seattle time → send messages silently (no notifications). */
+function isDuringQuietHours(): boolean {
+  const seattle = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+  const hour = seattle.getHours();
+  return hour >= 0 && hour < 8;
+}
+
+function sendFlags(): number | undefined {
+  return isDuringQuietHours() ? MessageFlags.SuppressNotifications : undefined;
+}
+
 // ─── Extraction Pipeline ────────────────────────────────────────────────────
 
 async function processConversation(channelId: string, messages: BufferedMessage[]): Promise<void> {
@@ -247,7 +258,7 @@ async function processConversation(channelId: string, messages: BufferedMessage[
   if (!hasTrackableContent && nudges.length > 0) {
     const nudgeMessage = formatNudges(nudges, nameToId);
     if (nudgeMessage) {
-      try { await channel.send(nudgeMessage); } catch { /* best effort */ }
+      try { await channel.send({ content: nudgeMessage, flags: sendFlags() }); } catch { /* best effort */ }
     }
     return;
   }
@@ -257,7 +268,7 @@ async function processConversation(channelId: string, messages: BufferedMessage[
   if (!extractionMessage) return;
 
   try {
-    const sent = await channel.send(extractionMessage);
+    const sent = await channel.send({ content: extractionMessage, flags: sendFlags() });
     await sent.react('✅');
     await sent.react('❌');
 
