@@ -1,0 +1,266 @@
+import { execSync, execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { getOctokit } from './github.js';
+import { getAgent } from './agents/index.js';
+import type { AgentResult } from './agents/index.js';
+
+const WORKSPACE_DIR = path.resolve(process.env.AGENT_WORKSPACE || './workspace');
+const MAX_QUEUE_SIZE = 5;
+
+interface OrchestratorResult {
+  success: boolean;
+  prUrl?: string;
+  issueNumber?: number;
+  error?: string;
+  summary?: string;
+}
+
+// ─── Job Queue ────────────────────────────────────────────────────────────────
+
+interface QueuedJob {
+  options: CodingTaskOptions;
+  resolve: (result: OrchestratorResult) => void;
+  reject: (err: Error) => void;
+}
+
+const queue: QueuedJob[] = [];
+let running = false;
+let warmupDone = false;
+let warmupPromise: Promise<void> | null = null;
+
+async function processQueue(): Promise<void> {
+  if (running || queue.length === 0) return;
+  // Wait for warmup to finish before processing jobs
+  if (!warmupDone && warmupPromise) await warmupPromise;
+  running = true;
+
+  const job = queue.shift()!;
+  try {
+    const result = await executeTask(job.options);
+    job.resolve(result);
+  } catch (err) {
+    job.reject(err instanceof Error ? err : new Error(String(err)));
+  } finally {
+    running = false;
+    processQueue();
+  }
+}
+
+// ─── Git Helpers ──────────────────────────────────────────────────────────────
+
+function git(args: string[], cwd: string, stdin?: string): string {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf-8',
+    stdio: stdin ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
+    input: stdin,
+  }).trim();
+}
+
+function getRepoDir(): string {
+  const owner = process.env.GITHUB_OWNER!;
+  const repo = process.env.GITHUB_REPO!;
+  return path.join(WORKSPACE_DIR, `${owner}--${repo}`);
+}
+
+function cloneOrPull(): string {
+  const repoDir = getRepoDir();
+  const owner = process.env.GITHUB_OWNER!;
+  const repo = process.env.GITHUB_REPO!;
+
+  if (!fs.existsSync(repoDir)) {
+    fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+    // Use GIT_ASKPASS to provide token without embedding in URL
+    const cloneUrl = `https://github.com/${owner}/${repo}.git`;
+    const token = process.env.GITHUB_TOKEN || '';
+    execFileSync('git', ['clone', cloneUrl, repoDir], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        GIT_ASKPASS: 'echo',
+        GIT_USERNAME: 'x-access-token',
+        GIT_PASSWORD: token,
+        GIT_TERMINAL_PROMPT: '0',
+      },
+    });
+    // Configure credential for future operations on this repo
+    git(['config', 'credential.helper', ''], repoDir);
+    git(['remote', 'set-url', 'origin', cloneUrl], repoDir);
+  } else {
+    git(['checkout', 'main'], repoDir);
+    git(['reset', '--hard', 'origin/main'], repoDir);
+    git(['pull', '--rebase'], repoDir);
+  }
+
+  return repoDir;
+}
+
+function cleanupLocalBranches(repoDir: string): void {
+  try {
+    // Delete all local moomie/* branches except the current one
+    const branches = git(['branch', '--list', 'moomie/*'], repoDir);
+    for (const branch of branches.split('\n')) {
+      const name = branch.replace(/^\*?\s*/, '').trim();
+      if (name) {
+        try { git(['branch', '-D', name], repoDir); } catch {}
+      }
+    }
+    // Prune remote tracking refs
+    git(['remote', 'prune', 'origin'], repoDir);
+  } catch {
+    // Non-critical
+  }
+}
+
+// ─── Pre-clone on import ──────────────────────────────────────────────────────
+
+export function warmupRepo(): void {
+  warmupPromise = (async () => {
+    try {
+      const repoDir = cloneOrPull();
+      cleanupLocalBranches(repoDir);
+      console.log(`[Orchestrator] Repo ready at ${repoDir}`);
+    } catch (err) {
+      console.error('[Orchestrator] Warmup failed (will retry on first job):', err);
+    } finally {
+      warmupDone = true;
+    }
+  })();
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+
+interface CodingTaskOptions {
+  task: string;
+  title?: string;
+  issueNumber?: number;
+  referenceFiles?: string[];
+  requestedBy: string;
+}
+
+export function getQueueStatus(): { running: boolean; queued: number } {
+  return { running, queued: queue.length };
+}
+
+export function runCodingTask(options: CodingTaskOptions): Promise<OrchestratorResult> {
+  if (queue.length >= MAX_QUEUE_SIZE) {
+    return Promise.resolve({
+      success: false,
+      error: `Queue is full (${MAX_QUEUE_SIZE} jobs waiting). Try again later.`,
+    });
+  }
+
+  console.log(`[Orchestrator] Queued job #${options.issueNumber || '?'} (${queue.length + 1} in queue, ${running ? 'one running' : 'idle'})`);
+
+  return new Promise((resolve, reject) => {
+    queue.push({ options, resolve, reject });
+    processQueue();
+  });
+}
+
+// ─── Task Execution ───────────────────────────────────────────────────────────
+
+async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResult> {
+  const { task, title, issueNumber, referenceFiles, requestedBy } = options;
+  const prTitle = title || task.split('\n')[0].slice(0, 80);
+  const owner = process.env.GITHUB_OWNER!;
+  const repo = process.env.GITHUB_REPO!;
+  const agent = getAgent();
+
+  console.log(`[Orchestrator] Starting task with ${agent.name}: "${prTitle}"`);
+
+  // 1. Ensure repo is up to date
+  let repoDir: string;
+  try {
+    repoDir = cloneOrPull();
+  } catch (err) {
+    return { success: false, error: `Failed to set up repo: ${err}` };
+  }
+
+  // 2. Create a feature branch
+  const branchName = `moomie/${issueNumber || Date.now()}-${prTitle.slice(0, 30).replace(/[^a-z0-9]/gi, '-').toLowerCase()}`;
+  try {
+    git(['checkout', '-b', branchName], repoDir);
+  } catch {
+    git(['checkout', branchName], repoDir);
+    git(['reset', '--hard', 'main'], repoDir);
+  }
+
+  // 3. Run the coding agent
+  let result: AgentResult;
+  try {
+    result = await agent.execute(
+      { prompt: task, referenceFiles },
+      repoDir
+    );
+  } catch (err) {
+    git(['checkout', 'main'], repoDir);
+    return { success: false, error: `Agent failed: ${err}` };
+  }
+
+  if (!result.success) {
+    git(['checkout', 'main'], repoDir);
+    return { success: false, error: result.error || 'Agent reported failure.' };
+  }
+
+  // 4. Check if there are actual changes
+  const status = git(['status', '--porcelain'], repoDir);
+  if (!status) {
+    git(['checkout', 'main'], repoDir);
+    return { success: false, error: 'Agent finished but made no changes.' };
+  }
+
+  // 5. Commit and push
+  try {
+    git(['add', '-A'], repoDir);
+    const commitMsg = issueNumber
+      ? `${prTitle}\n\nFixes #${issueNumber}\nRequested by ${requestedBy}`
+      : `${prTitle}\n\nRequested by ${requestedBy}`;
+    // Use -F - to pass commit message via stdin (avoids shell injection)
+    git(['commit', '-F', '-'], repoDir, commitMsg);
+    git(['push', 'origin', branchName, '--force'], repoDir);
+  } catch (err) {
+    git(['checkout', 'main'], repoDir);
+    return { success: false, error: `Failed to push: ${err}` };
+  }
+
+  // 6. Open a PR
+  try {
+    const octokit = getOctokit();
+    const prBody = [
+      `## Task`,
+      task,
+      '',
+      `## Summary`,
+      result.summary,
+      '',
+      `---`,
+      `Requested by **${requestedBy}** via Discord`,
+      issueNumber ? `Fixes #${issueNumber}` : '',
+    ].filter(Boolean).join('\n');
+
+    const { data: pr } = await octokit.pulls.create({
+      owner,
+      repo,
+      title: prTitle,
+      body: prBody,
+      head: branchName,
+      base: 'main',
+    });
+
+    // 7. Cleanup: switch to main, delete local branch
+    git(['checkout', 'main'], repoDir);
+    try { git(['branch', '-D', branchName], repoDir); } catch {}
+
+    return {
+      success: true,
+      prUrl: pr.html_url,
+      issueNumber,
+      summary: result.summary,
+    };
+  } catch (err) {
+    git(['checkout', 'main'], repoDir);
+    return { success: false, error: `PR creation failed: ${err}` };
+  }
+}

@@ -1,0 +1,57 @@
+# Moomie bot agent policy — scoped sandbox for headless Gemini CLI
+# Passed via --policy flag to restrict what the agent can do
+
+# ─── Deny dangerous shell commands ────────────────────────────────────────────
+
+[[rule]]
+toolName = "run_shell_command"
+commandRegex = "(rm\\s+-rf|rmdir|del\\s|Remove-Item|format\\s)"
+decision = "deny"
+priority = 900
+denyMessage = "Destructive file operations are not allowed."
+
+[[rule]]
+toolName = "run_shell_command"
+commandRegex = "(curl|wget|Invoke-WebRequest|Invoke-RestMethod|nc\\s|ncat)"
+decision = "deny"
+priority = 900
+denyMessage = "Network access from shell commands is not allowed."
+
+[[rule]]
+toolName = "run_shell_command"
+commandRegex = "(env|printenv|set\\s|\\$env:)"
+decision = "deny"
+priority = 900
+denyMessage = "Reading environment variables is not allowed."
+
+# ─── Block access to sensitive files ──────────────────────────────────────────
+
+[[rule]]
+toolName = ["read_file", "write_file", "replace"]
+argsPattern = "\\.(env|pem|key|secret|credentials)"
+decision = "deny"
+priority = 900
+denyMessage = "Access to credential/secret files is not allowed."
+
+[[rule]]
+toolName = ["read_file", "write_file", "replace"]
+argsPattern = "(node_modules|\\.git/)"
+decision = "deny"
+priority = 900
+denyMessage = "Access to node_modules and .git internals is not allowed."
+
+# ─── Block writes outside the working directory ───────────────────────────────
+
+[[rule]]
+toolName = ["write_file", "replace"]
+argsPattern = "\\.\\."
+decision = "deny"
+priority = 800
+denyMessage = "Writing to paths outside the working directory is not allowed."
+
+# ─── Allow everything else (yolo-like) ────────────────────────────────────────
+
+[[rule]]
+toolName = "*"
+decision = "allow"
+priority = 100
