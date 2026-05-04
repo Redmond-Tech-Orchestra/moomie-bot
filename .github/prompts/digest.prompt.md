@@ -4,7 +4,7 @@ agent: "agent"
 tools: [search]
 argument-hint: "Paste conversation text or describe what to analyze"
 ---
-You are analyzing Discord conversations for the Microsoft Open Orchestra.
+You are analyzing Discord conversations for the Redmond Tech Orchestra.
 
 The full prompt rules are defined in `src/prompts/digest-system.md` — this is the single source of truth shared with Moomie's runtime. Read that file and follow its rules exactly.
 

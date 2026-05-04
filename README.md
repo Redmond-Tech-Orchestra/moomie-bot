@@ -1,6 +1,6 @@
 # Moomie Bot
 
-Discord + Teams bot for the Redmond Tech Orchestra (Microsoft Open Orchestra). Manages project tracking, automates website maintenance using AI agents, generates activity digests, and handles reminders.
+Discord + Teams bot for the Redmond Tech Orchestra. Manages project tracking, automates website maintenance using AI agents, generates activity digests, and handles reminders.
 
 ## Commands
 
