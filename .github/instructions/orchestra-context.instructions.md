@@ -1,5 +1,5 @@
 ---
-description: "Use when working on moomie-bot, the Microsoft Open Orchestra Discord bot. Covers team structure, server layout, event-driven workflow, and design principles."
+description: "Use when working on moomie-bot, the Microsoft Open Orchestra Discord bot. Covers server layout, event-driven workflow, and design principles."
 applyTo: "src/**"
 ---
 # Microsoft Open Orchestra (MOO) — Domain Context
@@ -9,17 +9,6 @@ applyTo: "src/**"
 - Mix of Microsoft employees and community members
 - ~4 major concerts per year + smaller chamber/community events
 - Discord server is the primary coordination tool
-
-## Team Structure (Discord roles → responsibilities)
-- **admin**: Jada, Ethan, Nandhini — org-level decisions
-- **team leads**: Peter (conductor), Nandhini — strategic direction
-- **logistics**: David, Jada, Rachel — venues, rehearsals, day-of
-- **marketing**: Erica, Jada, Nandhini, Stumpy — social media, tickets, newsletters
-- **finances**: Ethan — budget, sponsorships
-- **librarian**: Peter, James, Erica, Ethan, Sabrina — scores, concert programs, posters
-- **design**: Su Min, Amy — visual assets
-- **arrangers**: Peter, Nicole, William — custom arrangements
-- People hold multiple roles (Jada is admin + logistics + marketing)
 
 ## Discord Server Structure
 - **Text Channels**: general, pins, for-fun, npo-stuff, bots
