@@ -23,7 +23,7 @@ OPEN items — things that still need to happen:
 - Unresolved tasks: someone said they'd do something and it hasn't been confirmed done
 
 DONE items — only significant completions worth recording:
-- Major milestones: "Venue confirmed", "Contract signed", "Survey sent out"
+- Major outcomes: "Venue confirmed", "Contract signed", "Survey sent out"
 - Skip trivial completions like "printed QR codes" or "brought tape"
 
 ## What NOT to Extract

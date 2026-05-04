@@ -11,6 +11,43 @@ import {
 import { PERFORMANCES_CATEGORY_ID, ARCHIVED_CATEGORY_ID, DISCORD_GUILD_ID } from '../../config.js';
 
 /**
+ * Register a reaction listener that confirms events when ✅ is added
+ * to a bot confirmation message in a Performances channel.
+ */
+export function registerEventConfirmationListener(client: Client): void {
+  client.on('messageReactionAdd', async (reaction, user) => {
+    if (user.bot) return;
+    if (reaction.partial) {
+      try { await reaction.fetch(); } catch { return; }
+    }
+    if (reaction.message.partial) {
+      try { await reaction.message.fetch(); } catch { return; }
+    }
+
+    if (reaction.emoji.name !== '✅') return;
+
+    const message = reaction.message;
+    if (message.author?.id !== client.user?.id) return;
+
+    // Only handle messages in Performances category channels
+    const channel = message.channel;
+    if (!('parentId' in channel) || channel.parentId !== PERFORMANCES_CATEGORY_ID) return;
+
+    const event = getEventByChannelId(channel.id);
+    if (!event || event.confirmed) return;
+
+    confirmEvent(event.id);
+    console.log(`[Tracker] Event confirmed via reaction: ${event.name} (id=${event.id})`);
+
+    try {
+      await (channel as TextChannel).send(
+        `✅ **${event.name}** confirmed! I'll keep an eye on action items for this event.`
+      );
+    } catch { /* best effort */ }
+  });
+}
+
+/**
  * Run on startup: sync all channels in the Performances category to the events table.
  */
 export async function syncEvents(client: Client): Promise<void> {
@@ -183,7 +220,7 @@ async function askForConfirmation(channel: TextChannel, parsed: ReturnType<typeo
     `Is this right? Reply with corrections if not:\n` +
     `• Event name?\n` +
     `• Date(s)? (e.g. "Jul 16 and Jul 18" or "Jul 16-18")\n\n` +
-    `React ✅ to confirm and I'll set up milestone tracking.`
+    `React ✅ to confirm and I'll start tracking action items for it.`
   );
   } catch (err) {
     console.error(`[Tracker] Could not send confirmation to #${channel.name}:`, err);
@@ -193,13 +230,4 @@ async function askForConfirmation(channel: TextChannel, parsed: ReturnType<typeo
 function formatDisplayDate(isoDate: string): string {
   const d = new Date(isoDate + 'T00:00:00');
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
-/**
- * Handle a ✅ reaction on a confirmation message to finalize the event.
- * Called from the reaction collector setup (to be wired in later phase).
- */
-export function onEventConfirmed(eventId: number, _eventDate: string): void {
-  confirmEvent(eventId);
-  console.log(`[Tracker] Event ${eventId} confirmed`);
 }

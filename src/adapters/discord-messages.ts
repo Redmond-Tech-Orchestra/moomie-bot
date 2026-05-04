@@ -62,7 +62,7 @@ async function fetchUntil(
       }
       if (!m.author.bot) {
         all.push({
-          author: m.author.displayName || m.author.username,
+          author: m.member?.displayName ?? m.author.displayName ?? m.author.username,
           content: m.content || (m.attachments.size > 0 ? '[attachment]' : '[embed]'),
           timestamp: m.createdAt,
         });
