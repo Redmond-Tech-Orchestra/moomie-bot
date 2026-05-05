@@ -98,7 +98,9 @@ async function callGemini(transcript: string, window: string): Promise<string> {
   const events = getActiveEvents();
   const eventsContext = events.length > 0
     ? 'Known upcoming events:\n' + events.map((e) => {
-        const dateStr = new Date(e.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        const dateStr = e.date
+          ? new Date(e.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+          : 'date TBD';
         return `- ${e.name} — ${dateStr}${e.channel_name ? ` (channel: #${e.channel_name})` : ''}`;
       }).join('\n')
     : 'No upcoming events currently tracked.';

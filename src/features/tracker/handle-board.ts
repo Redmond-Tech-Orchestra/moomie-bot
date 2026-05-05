@@ -77,7 +77,9 @@ async function getConsolidatedBoard(events: TrackerEvent[]): Promise<string | nu
   }).join('\n');
 
   const eventsContext = events.map((e) => {
-    const dateStr = new Date(e.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const dateStr = e.date
+      ? new Date(e.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+      : 'date TBD';
     return `- ${e.name} (id: ${e.id}) — ${dateStr}`;
   }).join('\n');
 
@@ -121,7 +123,7 @@ function formatConsolidatedBoard(sections: ConsolidatedSection[], events: Tracke
 
   for (const section of sections) {
     const event = section.event_id ? events.find((e) => e.id === section.event_id) : null;
-    const tMinus = event ? ` — ${formatTMinus(event.date)}` : '';
+    const tMinus = event?.date ? ` — ${formatTMinus(event.date)}` : '';
     lines.push(`**${section.title}**${tMinus}`);
 
     for (const item of section.items) {
@@ -149,8 +151,8 @@ function formatFallbackOverview(events: TrackerEvent[]): string {
     const done = items.filter((i) => i.status === 'done').length;
     const overdue = items.filter((i) => i.status === 'open' && isOverdue(i)).length;
 
-    const dateStr = formatDate(event.date);
-    const tMinus = formatTMinus(event.date);
+    const dateStr = event.date ? formatDate(event.date) : 'TBD';
+    const tMinus = event.date ? formatTMinus(event.date) : 'date TBD';
     const overdueStr = overdue > 0 ? ` ⚠️ ${overdue} overdue` : '';
 
     lines.push(`🎵 **${event.name}** (${dateStr}, ${tMinus}) — ${done} done, ${open} open${overdueStr}`);
@@ -193,8 +195,8 @@ function formatOrgBoard(): string {
 
 function formatEventBoard(event: TrackerEvent): string {
   const items = getItemsForEvent(event.id);
-  const dateStr = formatDate(event.date);
-  const tMinus = formatTMinus(event.date);
+  const dateStr = event.date ? formatDate(event.date) : 'TBD';
+  const tMinus = event.date ? formatTMinus(event.date) : 'date TBD';
 
   const lines: string[] = [`## 🎵 ${event.name} (${dateStr}) — ${tMinus}\n`];
 

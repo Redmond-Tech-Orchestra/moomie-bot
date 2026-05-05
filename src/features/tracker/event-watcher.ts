@@ -6,6 +6,7 @@ import {
   createEvent,
   confirmEvent,
   archiveEvent,
+  updateEvent,
   getAllEvents,
 } from './store.js';
 import { PERFORMANCES_CATEGORY_ID, ARCHIVED_CATEGORY_ID, DISCORD_GUILD_ID } from '../../config.js';
@@ -82,11 +83,10 @@ export async function syncEvents(client: Client): Promise<void> {
       continue;
     }
 
-    if (parsed.ambiguous) {
-      // Create event with placeholder date — will be updated on confirmation
+    if (parsed.ambiguous || parsed.days.length === 0) {
+      // Dateless or ambiguous — create with null date, ask for details
       createEvent({
         name: parsed.name,
-        date: '1970-01-01',
         channel_id: channel.id,
         channel_name: channel.name,
         confirmed: false,
@@ -147,10 +147,9 @@ export function registerChannelWatcher(client: Client): void {
       return;
     }
 
-    if (parsed.ambiguous) {
+    if (parsed.ambiguous || parsed.days.length === 0) {
       createEvent({
         name: parsed.name,
-        date: '1970-01-01',
         channel_id: channel.id,
         channel_name: channel.name,
         confirmed: false,
@@ -173,21 +172,52 @@ export function registerChannelWatcher(client: Client): void {
     console.log(`[Tracker] New event detected: ${parsed.name} (${date})`);
   });
 
-  // Watch for channel moves (to Archived category)
-  client.on('channelUpdate', (oldChannel, newChannel) => {
+  // Watch for channel moves (to Archived category) and renames
+  client.on('channelUpdate', async (oldChannel, newChannel) => {
     if (newChannel.type !== ChannelType.GuildText) return;
-    if (!ARCHIVED_CATEGORY_ID) return;
 
-    const oldParent = 'parentId' in oldChannel ? oldChannel.parentId : null;
-    const newParent = 'parentId' in newChannel ? newChannel.parentId : null;
+    // Archive detection
+    if (ARCHIVED_CATEGORY_ID) {
+      const oldParent = 'parentId' in oldChannel ? oldChannel.parentId : null;
+      const newParent = 'parentId' in newChannel ? newChannel.parentId : null;
 
-    if (oldParent !== ARCHIVED_CATEGORY_ID && newParent === ARCHIVED_CATEGORY_ID) {
-      const event = getEventByChannelId(newChannel.id);
-      if (event && !event.archived) {
-        archiveEvent(event.id);
-        console.log(`[Tracker] Event archived: ${event.name}`);
+      if (oldParent !== ARCHIVED_CATEGORY_ID && newParent === ARCHIVED_CATEGORY_ID) {
+        const event = getEventByChannelId(newChannel.id);
+        if (event && !event.archived) {
+          archiveEvent(event.id);
+          console.log(`[Tracker] Event archived: ${event.name}`);
+        }
       }
     }
+
+    // Rename detection — only for Performances channels
+    if (newChannel.parentId !== PERFORMANCES_CATEGORY_ID) return;
+    const oldName = 'name' in oldChannel ? oldChannel.name : null;
+    if (!oldName || oldName === newChannel.name) return;
+
+    const event = getEventByChannelId(newChannel.id);
+    if (!event) return;
+
+    const parsed = parseChannelName(newChannel.name);
+    if (!parsed) {
+      console.log(`[Tracker] Renamed channel could not be parsed: #${newChannel.name}`);
+      return;
+    }
+
+    // Compute updated fields
+    const fields: { name?: string; date?: string | null; end_date?: string | null; channel_name?: string } = {
+      name: parsed.name,
+      channel_name: newChannel.name,
+    };
+
+    if (parsed.days.length > 0 && !parsed.ambiguous) {
+      const { date, end_date } = computeEventDates(parsed);
+      fields.date = date;
+      fields.end_date = end_date;
+    }
+
+    updateEvent(event.id, fields);
+    console.log(`[Tracker] Event updated from channel rename: #${oldName} → #${newChannel.name} (id=${event.id}, name=${parsed.name}${fields.date ? `, date=${fields.date}` : ''})`);
   });
 }
 
@@ -204,6 +234,17 @@ async function askForConfirmation(channel: TextChannel, parsed: ReturnType<typeo
         `Can someone tell me:\n` +
         `• Event name?\n` +
         `• Date(s)? (e.g. "Jul 16 and Jul 18" or "Jul 16-18")`
+      );
+      return;
+    }
+
+    if (parsed.days.length === 0) {
+      await channel.send(
+        `📅 **New performance channel detected!**\n\n` +
+        `I see: #${parsed.raw}\n` +
+        `Looks like **${parsed.name}** — no specific date yet.\n\n` +
+        `When you know the date, rename the channel (e.g. \`11-6-${parsed.name}\`) and I'll pick it up.\n` +
+        `Or tell me here and react ✅ to confirm.`
       );
       return;
     }
