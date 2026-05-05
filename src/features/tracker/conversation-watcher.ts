@@ -2,6 +2,7 @@ import type { Client, Message, TextChannel } from 'discord.js';
 import { ChannelType, MessageFlags } from 'discord.js';
 import { loadPrompt } from '../../prompts/load-prompt.js';
 import { ARCHIVED_CATEGORY_ID, MODEL_EXTRACT, MODEL_DEDUP, geminiUrl } from '../../config.js';
+import { logAudit } from '../admin/audit-store.js';
 import {
   getActiveEvents,
   getOpenItemsForEvent,
@@ -235,7 +236,7 @@ async function processConversation(channelId: string, messages: BufferedMessage[
   }).join('\n');
 
   // Call Gemini
-  const result = await callGemini(apiKey, transcript, eventsContext, openItemsContext);
+  const result = await callGemini(apiKey, transcript, eventsContext, openItemsContext, channelId);
   if (!result) return;
 
   // Nothing actionable at all
@@ -349,11 +350,18 @@ async function callGemini(
   transcript: string,
   eventsContext: string,
   openItemsContext: string,
+  channelId: string,
+  channelName?: string,
 ): Promise<ExtractionResult | null> {
   const systemPrompt = loadPrompt('burst-extraction.md', {
     EVENTS_CONTEXT: eventsContext,
     OPEN_ITEMS_CONTEXT: openItemsContext,
   });
+
+  // Truncate transcript for audit log (keep first 500 chars)
+  const inputSummary = transcript.length > 500
+    ? transcript.slice(0, 500) + `... (${transcript.length} chars total)`
+    : transcript;
 
   try {
     const res = await fetch(`${geminiUrl(MODEL_EXTRACT)}?key=${apiKey}`, {
@@ -371,16 +379,35 @@ async function callGemini(
     if (!res.ok) {
       const body = await res.text();
       console.error(`[Tracker] Gemini API error ${res.status}:`, body);
+      logAudit({ type: 'extraction', channel_id: channelId, channel_name: channelName, model: MODEL_EXTRACT, input_summary: inputSummary, result: `API error ${res.status}` });
       return null;
     }
 
     const data = await res.json() as {
       candidates?: { content?: { parts?: { text?: string }[] } }[];
+      usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
     };
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
     if (!text) return null;
 
     const parsed = JSON.parse(text) as ExtractionResult;
+
+    // Audit log the extraction
+    const itemCount = parsed.items?.length ?? 0;
+    const completionCount = parsed.completions?.length ?? 0;
+    const nudgeCount = parsed.nudges?.length ?? 0;
+    logAudit({
+      type: 'extraction',
+      channel_id: channelId,
+      channel_name: channelName,
+      model: MODEL_EXTRACT,
+      input_summary: inputSummary,
+      output_json: text,
+      result: `${itemCount} items, ${completionCount} completions, ${nudgeCount} nudges`,
+      tokens_in: data.usageMetadata?.promptTokenCount,
+      tokens_out: data.usageMetadata?.candidatesTokenCount,
+    });
+
     return parsed;
   } catch (err) {
     console.error('[Tracker] Gemini extraction call failed:', err);
@@ -449,6 +476,7 @@ async function dedupItems(
 
     const data = await res.json() as {
       candidates?: { content?: { parts?: { text?: string }[] } }[];
+      usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
     };
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
     if (!text) {
@@ -456,6 +484,20 @@ async function dedupItems(
     }
 
     const parsed = JSON.parse(text) as { results: DedupResult[] };
+
+    // Audit log the dedup call
+    const dupes = parsed.results.filter(r => r.verdict === 'duplicate').length;
+    const updates = parsed.results.filter(r => r.verdict === 'update').length;
+    logAudit({
+      type: 'dedup',
+      model: MODEL_DEDUP,
+      input_summary: `${newItems.length} new vs ${existingItems.length} existing`,
+      output_json: text,
+      result: `${dupes} dupes, ${updates} updates, ${parsed.results.length - dupes - updates} new`,
+      tokens_in: data.usageMetadata?.promptTokenCount,
+      tokens_out: data.usageMetadata?.candidatesTokenCount,
+    });
+
     return parsed.results;
   } catch (err) {
     console.error('[Tracker] Dedup call failed:', err);

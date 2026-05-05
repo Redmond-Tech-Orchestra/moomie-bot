@@ -1,7 +1,7 @@
 import { loadPrompt } from '../../prompts/load-prompt.js';
 import { toolDeclarations, executeTool } from './tools.js';
-
 import { MODEL_CHAT, geminiUrl } from '../../config.js';
+import { logAudit } from '../admin/audit-store.js';
 
 const MAX_TOOL_ROUNDS = 5;
 
@@ -55,7 +55,18 @@ export async function handleChatMessage(message: ChatMessage): Promise<string> {
     if (functionCalls.length === 0) {
       // Text response — we're done
       const textPart = parts.find((p: Record<string, unknown>) => p.text);
-      return (textPart?.text as string) || "Moo.";
+      const reply = (textPart?.text as string) || "Moo.";
+      logAudit({
+        type: 'chat',
+        channel_id: message.channelId,
+        channel_name: message.channelName,
+        model: MODEL_CHAT,
+        input_summary: message.content.slice(0, 500),
+        result: reply.slice(0, 500),
+        tokens_in: response.usageMetadata?.promptTokenCount,
+        tokens_out: response.usageMetadata?.candidatesTokenCount,
+      });
+      return reply;
     }
 
     // Add model's response to conversation
@@ -115,4 +126,8 @@ interface GeminiResponse {
       parts?: Array<Record<string, unknown>>;
     };
   }>;
+  usageMetadata?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+  };
 }
