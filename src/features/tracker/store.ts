@@ -7,7 +7,7 @@ registerMigration((db) => {
     CREATE TABLE IF NOT EXISTS events (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
-      date TEXT NOT NULL,
+      date TEXT,
       end_date TEXT,
       channel_id TEXT,
       channel_name TEXT,
@@ -41,12 +41,35 @@ registerMigration((db) => {
   `);
 });
 
+// Make events.date nullable (existing DBs have NOT NULL from the original schema)
+registerMigration((db) => {
+  const col = db.prepare(`SELECT "notnull" FROM pragma_table_info('events') WHERE name = 'date'`).get() as { notnull: number } | undefined;
+  if (!col || !col.notnull) return; // already nullable or table doesn't exist yet
+
+  db.exec(`
+    CREATE TABLE events_new (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      date TEXT,
+      end_date TEXT,
+      channel_id TEXT,
+      channel_name TEXT,
+      confirmed INTEGER DEFAULT 0,
+      archived INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    INSERT INTO events_new SELECT * FROM events;
+    DROP TABLE events;
+    ALTER TABLE events_new RENAME TO events;
+  `);
+});
+
 // ─── Event Queries ───────────────────────────────────────────────────────────
 
 export interface TrackerEvent {
   id: number;
   name: string;
-  date: string;
+  date: string | null;
   end_date: string | null;
   channel_id: string | null;
   channel_name: string | null;
@@ -57,7 +80,7 @@ export interface TrackerEvent {
 
 export function getActiveEvents(): TrackerEvent[] {
   return getDb()
-    .prepare(`SELECT * FROM events WHERE archived = 0 AND date >= date('now') ORDER BY date`)
+    .prepare(`SELECT * FROM events WHERE archived = 0 AND (date IS NULL OR date >= date('now')) ORDER BY date`)
     .all() as TrackerEvent[];
 }
 
@@ -79,10 +102,10 @@ export function getEventByChannelId(channelId: string): TrackerEvent | undefined
     .get(channelId) as TrackerEvent | undefined;
 }
 
-export function createEvent(event: { name: string; date: string; end_date?: string; channel_id?: string; channel_name?: string; confirmed?: boolean }): number {
+export function createEvent(event: { name: string; date?: string; end_date?: string; channel_id?: string; channel_name?: string; confirmed?: boolean }): number {
   const result = getDb()
     .prepare(`INSERT INTO events (name, date, end_date, channel_id, channel_name, confirmed) VALUES (?, ?, ?, ?, ?, ?)`)
-    .run(event.name, event.date, event.end_date ?? null, event.channel_id ?? null, event.channel_name ?? null, event.confirmed ? 1 : 0);
+    .run(event.name, event.date ?? null, event.end_date ?? null, event.channel_id ?? null, event.channel_name ?? null, event.confirmed ? 1 : 0);
   return result.lastInsertRowid as number;
 }
 
@@ -92,6 +115,18 @@ export function confirmEvent(id: number): void {
 
 export function archiveEvent(id: number): void {
   getDb().prepare(`UPDATE events SET archived = 1 WHERE id = ?`).run(id);
+}
+
+export function updateEvent(id: number, fields: { name?: string; date?: string | null; end_date?: string | null; channel_name?: string }): void {
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  if (fields.name !== undefined) { sets.push('name = ?'); values.push(fields.name); }
+  if (fields.date !== undefined) { sets.push('date = ?'); values.push(fields.date); }
+  if (fields.end_date !== undefined) { sets.push('end_date = ?'); values.push(fields.end_date); }
+  if (fields.channel_name !== undefined) { sets.push('channel_name = ?'); values.push(fields.channel_name); }
+  if (sets.length === 0) return;
+  values.push(id);
+  getDb().prepare(`UPDATE events SET ${sets.join(', ')} WHERE id = ?`).run(...values);
 }
 
 // ─── Item Queries ────────────────────────────────────────────────────────────
@@ -159,6 +194,12 @@ export function getOrphanItems(): TrackerItem[] {
   return getDb()
     .prepare(`SELECT * FROM items WHERE event_id IS NULL AND status != 'done' ORDER BY created_at`)
     .all() as TrackerItem[];
+}
+
+export function reassignItems(itemIds: number[], eventId: number): void {
+  const db = getDb();
+  const stmt = db.prepare(`UPDATE items SET event_id = ? WHERE id = ?`);
+  for (const id of itemIds) stmt.run(eventId, id);
 }
 
 export function getAllOpenItems(): TrackerItem[] {

@@ -3,12 +3,18 @@ import { ChannelType } from 'discord.js';
 import { parseChannelName, computeEventDates } from './parse-channel.js';
 import {
   getEventByChannelId,
+  getEventById,
   createEvent,
   confirmEvent,
   archiveEvent,
+  updateEvent,
   getAllEvents,
+  getOrphanItems,
+  reassignItems,
 } from './store.js';
-import { PERFORMANCES_CATEGORY_ID, ARCHIVED_CATEGORY_ID, DISCORD_GUILD_ID } from '../../config.js';
+import { PERFORMANCES_CATEGORY_ID, ARCHIVED_CATEGORY_ID, DISCORD_GUILD_ID, MODEL_DEDUP, geminiUrl } from '../../config.js';
+import { loadPrompt } from '../../prompts/load-prompt.js';
+import { logAudit } from '../admin/audit-store.js';
 
 /**
  * Register a reaction listener that confirms events when ✅ is added
@@ -82,16 +88,16 @@ export async function syncEvents(client: Client): Promise<void> {
       continue;
     }
 
-    if (parsed.ambiguous) {
-      // Create event with placeholder date — will be updated on confirmation
-      createEvent({
+    if (parsed.ambiguous || parsed.days.length === 0) {
+      // Dateless or ambiguous — create with null date, ask for details
+      const newId = createEvent({
         name: parsed.name,
-        date: '1970-01-01',
         channel_id: channel.id,
         channel_name: channel.name,
         confirmed: false,
       });
       await askForConfirmation(channel as TextChannel, parsed);
+      await attributeOrphansToEvent(newId);
       continue;
     }
 
@@ -107,6 +113,7 @@ export async function syncEvents(client: Client): Promise<void> {
 
     // Post confirmation request in the channel
     await askForConfirmation(channel as TextChannel, parsed, eventId);
+    await attributeOrphansToEvent(eventId);
     synced++;
   }
 
@@ -147,15 +154,15 @@ export function registerChannelWatcher(client: Client): void {
       return;
     }
 
-    if (parsed.ambiguous) {
-      createEvent({
+    if (parsed.ambiguous || parsed.days.length === 0) {
+      const newId = createEvent({
         name: parsed.name,
-        date: '1970-01-01',
         channel_id: channel.id,
         channel_name: channel.name,
         confirmed: false,
       });
       await askForConfirmation(channel as TextChannel, parsed);
+      attributeOrphansToEvent(newId).catch(() => {});
       return;
     }
 
@@ -170,24 +177,56 @@ export function registerChannelWatcher(client: Client): void {
     });
 
     await askForConfirmation(channel as TextChannel, parsed, eventId);
+    attributeOrphansToEvent(eventId).catch(() => {});
     console.log(`[Tracker] New event detected: ${parsed.name} (${date})`);
   });
 
-  // Watch for channel moves (to Archived category)
-  client.on('channelUpdate', (oldChannel, newChannel) => {
+  // Watch for channel moves (to Archived category) and renames
+  client.on('channelUpdate', async (oldChannel, newChannel) => {
     if (newChannel.type !== ChannelType.GuildText) return;
-    if (!ARCHIVED_CATEGORY_ID) return;
 
-    const oldParent = 'parentId' in oldChannel ? oldChannel.parentId : null;
-    const newParent = 'parentId' in newChannel ? newChannel.parentId : null;
+    // Archive detection
+    if (ARCHIVED_CATEGORY_ID) {
+      const oldParent = 'parentId' in oldChannel ? oldChannel.parentId : null;
+      const newParent = 'parentId' in newChannel ? newChannel.parentId : null;
 
-    if (oldParent !== ARCHIVED_CATEGORY_ID && newParent === ARCHIVED_CATEGORY_ID) {
-      const event = getEventByChannelId(newChannel.id);
-      if (event && !event.archived) {
-        archiveEvent(event.id);
-        console.log(`[Tracker] Event archived: ${event.name}`);
+      if (oldParent !== ARCHIVED_CATEGORY_ID && newParent === ARCHIVED_CATEGORY_ID) {
+        const event = getEventByChannelId(newChannel.id);
+        if (event && !event.archived) {
+          archiveEvent(event.id);
+          console.log(`[Tracker] Event archived: ${event.name}`);
+        }
       }
     }
+
+    // Rename detection — only for Performances channels
+    if (newChannel.parentId !== PERFORMANCES_CATEGORY_ID) return;
+    const oldName = 'name' in oldChannel ? oldChannel.name : null;
+    if (!oldName || oldName === newChannel.name) return;
+
+    const event = getEventByChannelId(newChannel.id);
+    if (!event) return;
+
+    const parsed = parseChannelName(newChannel.name);
+    if (!parsed) {
+      console.log(`[Tracker] Renamed channel could not be parsed: #${newChannel.name}`);
+      return;
+    }
+
+    // Compute updated fields
+    const fields: { name?: string; date?: string | null; end_date?: string | null; channel_name?: string } = {
+      name: parsed.name,
+      channel_name: newChannel.name,
+    };
+
+    if (parsed.days.length > 0 && !parsed.ambiguous) {
+      const { date, end_date } = computeEventDates(parsed);
+      fields.date = date;
+      fields.end_date = end_date;
+    }
+
+    updateEvent(event.id, fields);
+    console.log(`[Tracker] Event updated from channel rename: #${oldName} → #${newChannel.name} (id=${event.id}, name=${parsed.name}${fields.date ? `, date=${fields.date}` : ''})`);
   });
 }
 
@@ -204,6 +243,17 @@ async function askForConfirmation(channel: TextChannel, parsed: ReturnType<typeo
         `Can someone tell me:\n` +
         `• Event name?\n` +
         `• Date(s)? (e.g. "Jul 16 and Jul 18" or "Jul 16-18")`
+      );
+      return;
+    }
+
+    if (parsed.days.length === 0) {
+      await channel.send(
+        `📅 **New performance channel detected!**\n\n` +
+        `I see: #${parsed.raw}\n` +
+        `Looks like **${parsed.name}** — no specific date yet.\n\n` +
+        `When you know the date, rename the channel (e.g. \`11-6-${parsed.name}\`) and I'll pick it up.\n` +
+        `Or tell me here and react ✅ to confirm.`
       );
       return;
     }
@@ -230,4 +280,90 @@ async function askForConfirmation(channel: TextChannel, parsed: ReturnType<typeo
 function formatDisplayDate(isoDate: string): string {
   const d = new Date(isoDate + 'T00:00:00');
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// ─── Orphan Item Attribution ─────────────────────────────────────────────────
+
+/**
+ * When a new event is created, check if any unassigned ("org-wide") items
+ * should be attributed to it. Uses an LLM to match based on description.
+ */
+async function attributeOrphansToEvent(eventId: number): Promise<void> {
+  const orphans = getOrphanItems();
+  if (orphans.length === 0) return;
+
+  const event = getEventById(eventId);
+  if (!event) return;
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return;
+
+  const orphanList = orphans.map((i) => {
+    const owner = i.owner_name ? ` (owner: ${i.owner_name})` : '';
+    const date = i.source_date ? ` [${i.source_date}]` : '';
+    return `- [#${i.id}] ${i.description}${owner}${date}`;
+  }).join('\n');
+
+  const prompt = loadPrompt('orphan-attribution.md', {
+    EVENT_NAME: event.name,
+    CHANNEL_NAME: event.channel_name ?? event.name,
+    EVENT_DATE: event.date ?? 'TBD',
+    ORPHAN_ITEMS: orphanList,
+  }, true); // skip persona — this is a mechanical task
+
+  try {
+    const res = await fetch(`${geminiUrl(MODEL_DEDUP)}?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { responseMimeType: 'application/json' },
+      }),
+    });
+
+    if (!res.ok) {
+      console.error(`[Tracker] Orphan attribution API error ${res.status}`);
+      return;
+    }
+
+    const data = await res.json() as {
+      candidates?: { content?: { parts?: { text?: string }[] } }[];
+      usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+    };
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    if (!text) return;
+
+    const result = JSON.parse(text) as { attributions: { item_id: number; reason: string }[] };
+    if (!result.attributions?.length) return;
+
+    // Validate IDs — only reassign items that are actually orphans
+    const orphanIds = new Set(orphans.map((i) => i.id));
+    const validIds = result.attributions
+      .filter((a) => orphanIds.has(a.item_id))
+      .map((a) => a.item_id);
+
+    if (validIds.length === 0) return;
+
+    reassignItems(validIds, eventId);
+
+    const reasons = result.attributions
+      .filter((a) => orphanIds.has(a.item_id))
+      .map((a) => `#${a.item_id}: ${a.reason}`)
+      .join('; ');
+    console.log(`[Tracker] Attributed ${validIds.length} orphan(s) to "${event.name}": ${reasons}`);
+
+    logAudit({
+      type: 'attribution',
+      channel_id: event.channel_id ?? undefined,
+      channel_name: event.channel_name ?? undefined,
+      model: MODEL_DEDUP,
+      input_summary: `${orphans.length} orphans, event: ${event.name}`,
+      output_json: text,
+      result: `${validIds.length} attributed`,
+      tokens_in: data.usageMetadata?.promptTokenCount,
+      tokens_out: data.usageMetadata?.candidatesTokenCount,
+    });
+  } catch (err) {
+    console.error('[Tracker] Orphan attribution failed:', err);
+  }
 }

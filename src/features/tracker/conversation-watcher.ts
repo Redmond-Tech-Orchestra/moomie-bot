@@ -323,7 +323,9 @@ async function processConversation(channelId: string, messages: BufferedMessage[
 function buildEventsContext(events: TrackerEvent[]): string {
   if (events.length === 0) return 'No upcoming events currently tracked.';
   return 'Known upcoming events:\n' + events.map((e) => {
-    const dateStr = new Date(e.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const dateStr = e.date
+      ? new Date(e.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+      : 'date TBD';
     return `- ${e.name} — ${dateStr}${e.channel_name ? ` (channel: #${e.channel_name})` : ''}`;
   }).join('\n');
 }
