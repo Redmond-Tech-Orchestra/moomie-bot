@@ -41,6 +41,29 @@ registerMigration((db) => {
   `);
 });
 
+// Make events.date nullable (existing DBs have NOT NULL from the original schema)
+registerMigration((db) => {
+  const col = db.prepare(`SELECT "notnull" FROM pragma_table_info('events') WHERE name = 'date'`).get() as { notnull: number } | undefined;
+  if (!col || !col.notnull) return; // already nullable or table doesn't exist yet
+
+  db.exec(`
+    CREATE TABLE events_new (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      date TEXT,
+      end_date TEXT,
+      channel_id TEXT,
+      channel_name TEXT,
+      confirmed INTEGER DEFAULT 0,
+      archived INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    INSERT INTO events_new SELECT * FROM events;
+    DROP TABLE events;
+    ALTER TABLE events_new RENAME TO events;
+  `);
+});
+
 // ─── Event Queries ───────────────────────────────────────────────────────────
 
 export interface TrackerEvent {

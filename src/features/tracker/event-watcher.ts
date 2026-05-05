@@ -97,7 +97,7 @@ export async function syncEvents(client: Client): Promise<void> {
         confirmed: false,
       });
       await askForConfirmation(channel as TextChannel, parsed);
-      attributeOrphansToEvent(newId).catch(() => {});
+      await attributeOrphansToEvent(newId);
       continue;
     }
 
@@ -113,7 +113,7 @@ export async function syncEvents(client: Client): Promise<void> {
 
     // Post confirmation request in the channel
     await askForConfirmation(channel as TextChannel, parsed, eventId);
-    attributeOrphansToEvent(eventId).catch(() => {});
+    await attributeOrphansToEvent(eventId);
     synced++;
   }
 
