@@ -3,13 +3,18 @@ import { ChannelType } from 'discord.js';
 import { parseChannelName, computeEventDates } from './parse-channel.js';
 import {
   getEventByChannelId,
+  getEventById,
   createEvent,
   confirmEvent,
   archiveEvent,
   updateEvent,
   getAllEvents,
+  getOrphanItems,
+  reassignItems,
 } from './store.js';
-import { PERFORMANCES_CATEGORY_ID, ARCHIVED_CATEGORY_ID, DISCORD_GUILD_ID } from '../../config.js';
+import { PERFORMANCES_CATEGORY_ID, ARCHIVED_CATEGORY_ID, DISCORD_GUILD_ID, MODEL_DEDUP, geminiUrl } from '../../config.js';
+import { loadPrompt } from '../../prompts/load-prompt.js';
+import { logAudit } from '../admin/audit-store.js';
 
 /**
  * Register a reaction listener that confirms events when ✅ is added
@@ -85,13 +90,14 @@ export async function syncEvents(client: Client): Promise<void> {
 
     if (parsed.ambiguous || parsed.days.length === 0) {
       // Dateless or ambiguous — create with null date, ask for details
-      createEvent({
+      const newId = createEvent({
         name: parsed.name,
         channel_id: channel.id,
         channel_name: channel.name,
         confirmed: false,
       });
       await askForConfirmation(channel as TextChannel, parsed);
+      attributeOrphansToEvent(newId).catch(() => {});
       continue;
     }
 
@@ -107,6 +113,7 @@ export async function syncEvents(client: Client): Promise<void> {
 
     // Post confirmation request in the channel
     await askForConfirmation(channel as TextChannel, parsed, eventId);
+    attributeOrphansToEvent(eventId).catch(() => {});
     synced++;
   }
 
@@ -148,13 +155,14 @@ export function registerChannelWatcher(client: Client): void {
     }
 
     if (parsed.ambiguous || parsed.days.length === 0) {
-      createEvent({
+      const newId = createEvent({
         name: parsed.name,
         channel_id: channel.id,
         channel_name: channel.name,
         confirmed: false,
       });
       await askForConfirmation(channel as TextChannel, parsed);
+      attributeOrphansToEvent(newId).catch(() => {});
       return;
     }
 
@@ -169,6 +177,7 @@ export function registerChannelWatcher(client: Client): void {
     });
 
     await askForConfirmation(channel as TextChannel, parsed, eventId);
+    attributeOrphansToEvent(eventId).catch(() => {});
     console.log(`[Tracker] New event detected: ${parsed.name} (${date})`);
   });
 
@@ -271,4 +280,90 @@ async function askForConfirmation(channel: TextChannel, parsed: ReturnType<typeo
 function formatDisplayDate(isoDate: string): string {
   const d = new Date(isoDate + 'T00:00:00');
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// ─── Orphan Item Attribution ─────────────────────────────────────────────────
+
+/**
+ * When a new event is created, check if any unassigned ("org-wide") items
+ * should be attributed to it. Uses an LLM to match based on description.
+ */
+async function attributeOrphansToEvent(eventId: number): Promise<void> {
+  const orphans = getOrphanItems();
+  if (orphans.length === 0) return;
+
+  const event = getEventById(eventId);
+  if (!event) return;
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return;
+
+  const orphanList = orphans.map((i) => {
+    const owner = i.owner_name ? ` (owner: ${i.owner_name})` : '';
+    const date = i.source_date ? ` [${i.source_date}]` : '';
+    return `- [#${i.id}] ${i.description}${owner}${date}`;
+  }).join('\n');
+
+  const prompt = loadPrompt('orphan-attribution.md', {
+    EVENT_NAME: event.name,
+    CHANNEL_NAME: event.channel_name ?? event.name,
+    EVENT_DATE: event.date ?? 'TBD',
+    ORPHAN_ITEMS: orphanList,
+  }, true); // skip persona — this is a mechanical task
+
+  try {
+    const res = await fetch(`${geminiUrl(MODEL_DEDUP)}?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { responseMimeType: 'application/json' },
+      }),
+    });
+
+    if (!res.ok) {
+      console.error(`[Tracker] Orphan attribution API error ${res.status}`);
+      return;
+    }
+
+    const data = await res.json() as {
+      candidates?: { content?: { parts?: { text?: string }[] } }[];
+      usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+    };
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    if (!text) return;
+
+    const result = JSON.parse(text) as { attributions: { item_id: number; reason: string }[] };
+    if (!result.attributions?.length) return;
+
+    // Validate IDs — only reassign items that are actually orphans
+    const orphanIds = new Set(orphans.map((i) => i.id));
+    const validIds = result.attributions
+      .filter((a) => orphanIds.has(a.item_id))
+      .map((a) => a.item_id);
+
+    if (validIds.length === 0) return;
+
+    reassignItems(validIds, eventId);
+
+    const reasons = result.attributions
+      .filter((a) => orphanIds.has(a.item_id))
+      .map((a) => `#${a.item_id}: ${a.reason}`)
+      .join('; ');
+    console.log(`[Tracker] Attributed ${validIds.length} orphan(s) to "${event.name}": ${reasons}`);
+
+    logAudit({
+      type: 'attribution',
+      channel_id: event.channel_id ?? undefined,
+      channel_name: event.channel_name ?? undefined,
+      model: MODEL_DEDUP,
+      input_summary: `${orphans.length} orphans, event: ${event.name}`,
+      output_json: text,
+      result: `${validIds.length} attributed`,
+      tokens_in: data.usageMetadata?.promptTokenCount,
+      tokens_out: data.usageMetadata?.candidatesTokenCount,
+    });
+  } catch (err) {
+    console.error('[Tracker] Orphan attribution failed:', err);
+  }
 }

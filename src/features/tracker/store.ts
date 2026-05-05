@@ -173,6 +173,12 @@ export function getOrphanItems(): TrackerItem[] {
     .all() as TrackerItem[];
 }
 
+export function reassignItems(itemIds: number[], eventId: number): void {
+  const db = getDb();
+  const stmt = db.prepare(`UPDATE items SET event_id = ? WHERE id = ?`);
+  for (const id of itemIds) stmt.run(eventId, id);
+}
+
 export function getAllOpenItems(): TrackerItem[] {
   return getDb()
     .prepare(`SELECT * FROM items WHERE status = 'open' ORDER BY event_id, created_at`)
