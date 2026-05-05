@@ -1,7 +1,8 @@
 import { loadPrompt } from '../../prompts/load-prompt.js';
 import { toolDeclarations, executeTool } from './tools.js';
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+import { MODEL_CHAT, geminiUrl } from '../../config.js';
+
 const MAX_TOOL_ROUNDS = 5;
 
 interface ChatMessage {
@@ -85,7 +86,7 @@ async function callGemini(
   contents: Array<{ role: string; parts: Array<Record<string, unknown>> }>,
 ): Promise<GeminiResponse | null> {
   try {
-    const res = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+    const res = await fetch(`${geminiUrl(MODEL_CHAT)}?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

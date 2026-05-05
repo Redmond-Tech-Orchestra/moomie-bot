@@ -1,7 +1,7 @@
 import type { Client, Message, TextChannel } from 'discord.js';
 import { ChannelType, MessageFlags } from 'discord.js';
 import { loadPrompt } from '../../prompts/load-prompt.js';
-import { ARCHIVED_CATEGORY_ID } from '../../config.js';
+import { ARCHIVED_CATEGORY_ID, MODEL_EXTRACT, MODEL_DEDUP, geminiUrl } from '../../config.js';
 import {
   getActiveEvents,
   getOpenItemsForEvent,
@@ -22,8 +22,6 @@ const MAX_BUFFER = 50;                         // Oldest messages roll off past 
 const RATE_LIMIT_MS = 60 * 60 * 1000;         // Max 1 extraction per channel per hour
 const CONFIRMATION_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours to respond
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
-
 // ─── In-Memory Buffers ──────────────────────────────────────────────────────
 
 interface BufferedMessage {
@@ -31,6 +29,7 @@ interface BufferedMessage {
   authorId: string;
   content: string;
   timestamp: Date;
+  replyTo: string | null; // display name of the author being replied to
 }
 
 interface ChannelBuffer {
@@ -153,11 +152,22 @@ function bufferMessage(message: Message): void {
 
   const buf = buffers.get(channelId)!;
 
+  // Resolve reply target name if this message is a reply
+  let replyTo: string | null = null;
+  if (message.reference?.messageId) {
+    const ref = message.mentions.repliedUser;
+    if (ref) {
+      const member = message.guild?.members.cache.get(ref.id);
+      replyTo = member?.displayName ?? ref.username;
+    }
+  }
+
   buf.messages.push({
     authorName: message.member?.displayName ?? message.author.username,
     authorId: message.author.id,
     content: message.content,
     timestamp: message.createdAt,
+    replyTo,
   });
 
   // Roll off oldest messages
@@ -219,9 +229,10 @@ async function processConversation(channelId: string, messages: BufferedMessage[
   const openItemsContext = buildOpenItemsContext(events);
 
   // Build transcript
-  const transcript = messages.map((m) =>
-    `[${m.timestamp.toISOString()}] ${m.authorName}: ${m.content}`
-  ).join('\n');
+  const transcript = messages.map((m) => {
+    const replyTag = m.replyTo ? ` [reply to ${m.replyTo}]` : '';
+    return `[${m.timestamp.toISOString()}] ${m.authorName}${replyTag}: ${m.content}`;
+  }).join('\n');
 
   // Call Gemini
   const result = await callGemini(apiKey, transcript, eventsContext, openItemsContext);
@@ -262,6 +273,20 @@ async function processConversation(channelId: string, messages: BufferedMessage[
     if (nudgeMessage) {
       try { await channel.send({ content: nudgeMessage, flags: sendFlags() }); } catch { /* best effort */ }
     }
+
+    // Create unassigned tracked items for needs_owner nudges so they appear on the board
+    for (const nudge of nudges) {
+      if (nudge.type === 'needs_owner') {
+        const event = resolveEvent(nudge.event, events);
+        createItem({
+          event_id: event?.id ?? null,
+          description: nudge.message,
+          source: 'nudge',
+          source_channel: channelId,
+          source_date: new Date().toISOString().slice(0, 10),
+        });
+      }
+    }
     return;
   }
 
@@ -300,6 +325,15 @@ function buildEventsContext(events: TrackerEvent[]): string {
 
 function buildOpenItemsContext(events: TrackerEvent[]): string {
   const sections: string[] = [];
+
+  // Include org-wide items (no event association)
+  const orgItems = getAllOpenItems().filter(i => !i.event_id);
+  if (orgItems.length > 0) {
+    sections.push('Org-wide open items:\n' + orgItems.map((i) =>
+      `- [#${i.id}] ${i.description}${i.owner_name ? ` (owner: ${i.owner_name})` : ''}`
+    ).join('\n'));
+  }
+
   for (const event of events) {
     const items = getOpenItemsForEvent(event.id);
     if (items.length === 0) continue;
@@ -322,7 +356,7 @@ async function callGemini(
   });
 
   try {
-    const res = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+    const res = await fetch(`${geminiUrl(MODEL_EXTRACT)}?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -398,7 +432,7 @@ async function dedupItems(
   }
 
   try {
-    const res = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+    const res = await fetch(`${geminiUrl(MODEL_DEDUP)}?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

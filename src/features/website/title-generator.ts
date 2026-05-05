@@ -1,11 +1,11 @@
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+import { MODEL_CHAT, geminiUrl } from '../../config.js';
 
 export async function generateIssueTitle(taskDescription: string): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return taskDescription.split('\n')[0].slice(0, 80);
 
   try {
-    const res = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+    const res = await fetch(`${geminiUrl(MODEL_CHAT)}?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

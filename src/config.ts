@@ -28,3 +28,13 @@ export const MUSIC_ADMIN_ROLE = process.env.MUSIC_ADMIN_ROLE || 'Librarian';
 // Coding agent
 export const CODING_AGENT = process.env.CODING_AGENT || 'gemini';
 export const AGENT_WORKSPACE = process.env.AGENT_WORKSPACE || './workspace';
+
+// LLM models — route different tasks to different models
+const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+export const MODEL_CHAT = process.env.MODEL_CHAT || 'gemini-2.5-flash';
+export const MODEL_EXTRACT = process.env.MODEL_EXTRACT || 'gemini-2.5-flash';
+export const MODEL_DEDUP = process.env.MODEL_DEDUP || 'gemini-2.5-flash';
+
+export function geminiUrl(model: string): string {
+  return `${GEMINI_BASE}/${model}:generateContent`;
+}

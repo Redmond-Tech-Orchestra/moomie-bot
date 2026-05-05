@@ -3,13 +3,12 @@ import { getRecentMessages } from '../../adapters/index.js';
 import type { ChannelMessages } from '../../adapters/index.js';
 import { loadPrompt } from '../../prompts/load-prompt.js';
 import { getActiveEvents, getOpenItemsForEvent } from '../tracker/store.js';
-import { DISCORD_GUILD_ID } from '../../config.js';
+import { DISCORD_GUILD_ID, MODEL_CHAT, geminiUrl } from '../../config.js';
 import * as chrono from 'chrono-node';
 
 export const name = 'digest';
 export const description = 'Structured summary of recent server activity';
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 const DEFAULT_WINDOW = '1 week ago';
 const MAX_CONTEXT_CHARS = 80_000; // Stay well under Gemini's context window
 
@@ -122,7 +121,7 @@ async function callGemini(transcript: string, window: string): Promise<string> {
   });
 
   try {
-    const res = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+    const res = await fetch(`${geminiUrl(MODEL_CHAT)}?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

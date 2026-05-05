@@ -15,6 +15,22 @@ Extract CONCRETE action items that someone needs to DO. Focus on quality over qu
 - Do NOT extract items that duplicate something already in the open items list above
 - Return empty arrays if nothing is worth tracking
 
+### Interleaved Conversations
+
+Discord channels often have multiple conversations happening at once. Use reply references (lines starting with `[reply to Author]`) and topical context to separate threads before analyzing. Don't blend context from unrelated threads — an offer to help in one thread is not ownership of a task in another.
+
+### Ownership Attribution
+
+Attribution follows commitment, not mention. If person A raises a topic and person B offers to handle it, B is the owner. Read the full conversation before deciding who owns what — the last person to claim an action is the owner, regardless of who brought it up.
+
+### One Goal, One Item
+
+If multiple actions serve the same purpose (e.g., someone exploring several options for the same need), extract a single item describing the goal, not one per sub-action. The details can go in the description.
+
+### Within-Burst Resolution
+
+Before marking an extracted item as open, check whether it was already resolved later in the same conversation. If someone commits to a task and then confirms it's done within the same burst, extract it as done or skip it entirely.
+
 ## What to Extract (ONE item per real-world action)
 
 OPEN items — things that still need to happen:
@@ -25,6 +41,7 @@ OPEN items — things that still need to happen:
 DONE items — only significant completions worth recording:
 - Major outcomes: "Venue confirmed", "Contract signed", "Survey sent out"
 - Skip trivial completions like "printed QR codes" or "brought tape"
+- Do NOT extract status updates or announcements as done items. "Tickets sold out" or "we hit 500 members" are outcomes that happened, not tasks someone completed.
 
 ## What NOT to Extract
 
@@ -97,6 +114,8 @@ Do NOT nudge for:
 - Casual social chat
 - Topics where someone has already committed to action in this conversation
 - Conversations with only 1-2 participants (not enough context to nudge)
+
+**Before posting any nudge, re-read the full conversation to verify it hasn't already been resolved.** If someone volunteered, offered, or confirmed the action anywhere in the transcript, do not nudge for it. A nudge that ignores existing commitments undermines trust.
 
 Each nudge should be a SHORT, specific, actionable prompt — not a lecture. Think: "Sounds like we need someone to own X — any takers?" not a paragraph.
 
