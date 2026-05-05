@@ -5,7 +5,7 @@ import { getOctokit, getInstallationToken } from './github-client.js';
 import { getAgent } from './agents/index.js';
 import type { AgentResult } from './agents/index.js';
 import { copyToWorkspace, deleteUploads } from '../website/attachment-store.js';
-import { AGENT_WORKSPACE, GITHUB_OWNER, GITHUB_REPO, GITHUB_BOT_REPO } from '../../config.js';
+import { AGENT_WORKSPACE, GITHUB_OWNER, GITHUB_REPO } from '../../config.js';
 
 const WORKSPACE_DIR = path.resolve(AGENT_WORKSPACE);
 const MAX_QUEUE_SIZE = 5;
@@ -312,9 +312,15 @@ async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResu
   // 6. Open a PR
   try {
     const octokit = getOctokit();
+    // Reference the issue instead of inlining the full task, which may
+    // contain internal data (MCP URLs, channel IDs, investigation prompts).
+    const taskSection = issueNumber
+      ? `See #${issueNumber} for details.`
+      : task;
+
     const prBody = [
       `## Task`,
-      task,
+      taskSection,
       '',
       `## Summary`,
       result.summary,

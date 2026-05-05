@@ -26,9 +26,9 @@ interface FeedbackOptions {
  * 2. Queue a coding task that tells the agent to self-investigate via MCP
  * 3. Agent queries audit logs + DB state through the MCP endpoint
  * 4. Agent opens a PR to fix itself
- * 5. User gets notified with the PR link
+ * 5. User gets notified via webhook → tracked issue → notifyUser
  */
-export async function executeFeedback(opts: FeedbackOptions, reply: (text: string) => Promise<void>): Promise<string> {
+export async function executeFeedback(opts: FeedbackOptions): Promise<string> {
   // 1. Build a clean public issue body (no internal diagnostics)
   const quotedFeedback = opts.feedback.split('\n').map((l) => `> ${l}`).join('\n');
   const issueBody = [
@@ -51,11 +51,11 @@ export async function executeFeedback(opts: FeedbackOptions, reply: (text: strin
     repo: GITHUB_BOT_REPO,
     title,
     body: issueBody,
-    labels: ['feedback', 'moomie-bot'],
+    labels: ['feedback'],
   });
 
-  // Track issue for webhook notifications
-  trackIssue(issue.number, {
+  // Track issue for webhook notifications (scoped to bot repo)
+  trackIssue(issue.number, GITHUB_BOT_REPO, {
     channelId: opts.channelId,
     userId: opts.userId,
     platform: opts.platform,
@@ -113,22 +113,22 @@ export async function executeFeedback(opts: FeedbackOptions, reply: (text: strin
     `- Keep changes minimal and focused on the reported issue`,
   ].join('\n');
 
-  // 4. Queue the self-patching coding task (fire-and-forget, notifications via webhook)
+  // 4. Queue the self-patching coding task (fire-and-forget)
+  // Notification is handled by the webhook → tracked issue → notifyUser path.
   runCodingTask({
     title: issue.title,
     task: codingPrompt,
     issueNumber: issue.number,
     requestedBy: opts.userName,
     repo: GITHUB_BOT_REPO,
-  }).then(async (result) => {
+  }).then((result) => {
     if (result.success) {
-      await reply(`Self-patch PR ready: ${result.prUrl}`);
+      console.log(`[Feedback] Self-patch PR created for #${issue.number}: ${result.prUrl}`);
     } else {
-      await reply(`I created the issue but couldn't auto-fix it: ${result.error}\nIssue: ${issue.html_url}`);
+      console.error(`[Feedback] Self-patch failed for #${issue.number}: ${result.error}`);
     }
-  }).catch(async (err) => {
+  }).catch((err) => {
     console.error('[Feedback] Coding task failed:', err);
-    await reply(`I filed the issue but the self-patch failed. Issue: ${issue.html_url}`).catch(() => {});
   });
 
   return issue.html_url;
@@ -146,18 +146,15 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
   await ctx.deferReply();
 
   try {
-    const issueUrl = await executeFeedback(
-      {
-        feedback: args,
-        channelId: ctx.channelId,
-        channelName: ctx.channelId, // slash commands don't carry channel name; use ID as fallback
-        userId: ctx.userId,
-        userName: ctx.userName,
-        platform: ctx.platform,
-        conversationRef: ctx.conversationRef,
-      },
-      (text) => ctx.editReply(text),
-    );
+    const issueUrl = await executeFeedback({
+      feedback: args,
+      channelId: ctx.channelId,
+      channelName: ctx.channelId, // slash commands don't carry channel name; use ID as fallback
+      userId: ctx.userId,
+      userName: ctx.userName,
+      platform: ctx.platform,
+      conversationRef: ctx.conversationRef,
+    });
 
     await ctx.editReply(
       `Got it — I'm investigating and will try to fix myself. 🐄\nIssue: ${issueUrl}\nI'll follow up with a PR when I'm done.`

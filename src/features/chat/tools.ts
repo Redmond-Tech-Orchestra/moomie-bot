@@ -341,28 +341,15 @@ async function submitFeedbackTool(args: Record<string, unknown>, ctx: ToolCallCo
     const channel = guild?.channels.cache.get(ctx.channelId);
     const channelName = (channel && 'name' in channel) ? (channel as TextChannel).name : ctx.channelId;
 
-    const issueUrl = await executeFeedback(
-      {
-        feedback,
-        channelId: ctx.channelId,
-        channelName,
-        userId: ctx.userId,
-        userName: ctx.userName,
-        platform: 'discord',
-        referencedMessage,
-      },
-      // The reply callback for async follow-ups (PR ready, etc.) — these go through
-      // the channel directly since we're in a chat tool, not an interaction
-      async (text: string) => {
-        try {
-          if (channel && 'send' in channel) {
-            await (channel as TextChannel).send(text);
-          }
-        } catch (err) {
-          console.error('[Feedback] Failed to send follow-up:', err);
-        }
-      },
-    );
+    const issueUrl = await executeFeedback({
+      feedback,
+      channelId: ctx.channelId,
+      channelName,
+      userId: ctx.userId,
+      userName: ctx.userName,
+      platform: 'discord',
+      referencedMessage,
+    });
 
     return JSON.stringify({
       success: true,

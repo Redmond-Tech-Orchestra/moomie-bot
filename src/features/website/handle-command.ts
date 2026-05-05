@@ -3,6 +3,7 @@ import { createIssue } from '../coding/github-client.js';
 import { trackIssue } from '../coding/issue-tracker.js';
 import { generateIssueTitle } from '../coding/title-generator.js';
 import { saveAttachment } from './attachment-store.js';
+import { GITHUB_REPO } from '../../config.js';
 
 export const name = 'website';
 export const description = 'Create a website issue and have Moomie work on it';
@@ -48,7 +49,7 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
       body,
     });
 
-    trackIssue(issue.number, {
+    trackIssue(issue.number, GITHUB_REPO, {
       channelId: ctx.channelId,
       userId: ctx.userId,
       platform: ctx.platform,

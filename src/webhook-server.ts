@@ -9,7 +9,7 @@ import { startTeams } from './adapters/teams.js';
 import { getUploadsDir } from './features/website/attachment-store.js';
 import { initNotifications, notifyUser } from './adapters/index.js';
 import { mountMcp } from './features/admin/mcp-server.js';
-import { PORT } from './config.js';
+import { PORT, GITHUB_REPO } from './config.js';
 
 interface WebhookRequest extends Request {
   rawBody?: Buffer;
@@ -67,7 +67,7 @@ export function startServer(discordClient: Client): express.Express {
     }
 
     if (event === 'pull_request' && payload.action === 'opened') {
-      await handlePullRequest(payload.pull_request);
+      await handlePullRequest(payload.pull_request, payload.repository?.name);
     }
 
     res.sendStatus(200);
@@ -105,18 +105,20 @@ export function startServer(discordClient: Client): express.Express {
 
 // ─── Webhook Handlers ─────────────────────────────────────────────────────────
 
-async function handlePullRequest(pr: { body?: string; html_url: string }): Promise<void> {
+async function handlePullRequest(pr: { body?: string; html_url: string }, repo?: string): Promise<void> {
   const issueRefs = pr.body?.matchAll(/(?:closes|fixes|resolves)\s+#(\d+)/gi);
   if (!issueRefs) return;
 
+  const repoName = repo || GITHUB_REPO;
+
   for (const match of issueRefs) {
     const issueNumber = parseInt(match[1], 10);
-    const tracked = getTrackedIssue(issueNumber);
+    const tracked = getTrackedIssue(issueNumber, repoName);
     if (!tracked) continue;
 
     try {
       await notifyUser(tracked, `PR is ready for issue #${issueNumber}: ${pr.html_url}`);
-      untrackIssue(issueNumber);
+      untrackIssue(issueNumber, repoName);
     } catch (err) {
       console.error(`Failed to notify user for issue #${issueNumber}:`, err);
     }
@@ -126,11 +128,15 @@ async function handlePullRequest(pr: { body?: string; html_url: string }): Promi
 const TRIGGER_LABEL = 'moomie-bot';
 
 async function handleIssueLabelAdded(
-  payload: { issue: { number: number; title: string; body?: string; html_url: string }; label: { name: string }; sender: { login: string } },
+  payload: { issue: { number: number; title: string; body?: string; html_url: string; labels?: { name: string }[] }; label: { name: string }; sender: { login: string }; repository?: { name: string } },
 ): Promise<void> {
   if (payload.label.name !== TRIGGER_LABEL) return;
 
+  // Skip feedback issues — they have their own coding flow
+  if (payload.issue.labels?.some((l) => l.name === 'feedback')) return;
+
   const { issue, sender } = payload;
+  const repoName = payload.repository?.name || GITHUB_REPO;
 
   // Only allow org members to trigger the agent
   if (!await isOrgMember(sender.login)) {
@@ -141,7 +147,7 @@ async function handleIssueLabelAdded(
   console.log(`[Webhook] Label "${TRIGGER_LABEL}" added to #${issue.number} by ${sender.login}`);
 
   // Notify initiator if tracked
-  const tracked = getTrackedIssue(issue.number);
+  const tracked = getTrackedIssue(issue.number, repoName);
   if (tracked) {
     try {
       await notifyUser(tracked, `Moomie is working on issue #${issue.number}: ${issue.html_url}`);
@@ -166,6 +172,7 @@ async function handleIssueLabelAdded(
     issueNumber: issue.number,
     requestedBy: sender.login,
     attachments: attachments.length > 0 ? attachments : undefined,
+    repo: repoName,
   }).then(async (result) => {
     if (result.success) {
       console.log(`[Webhook] PR created for #${issue.number}: ${result.prUrl}`);
