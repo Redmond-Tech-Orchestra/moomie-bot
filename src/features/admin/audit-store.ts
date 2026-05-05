@@ -17,6 +17,7 @@ registerMigration((db) => {
       tokens_in INTEGER,
       tokens_out INTEGER
     );
+    CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp);
   `);
 });
 
@@ -48,24 +49,27 @@ export function logAudit(entry: {
   result?: string;
   tokens_in?: number;
   tokens_out?: number;
-}): number {
-  const result = getDb()
-    .prepare(`
-      INSERT INTO audit_log (type, channel_id, channel_name, model, input_summary, output_json, result, tokens_in, tokens_out)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    .run(
-      entry.type,
-      entry.channel_id ?? null,
-      entry.channel_name ?? null,
-      entry.model ?? null,
-      entry.input_summary ?? null,
-      entry.output_json ?? null,
-      entry.result ?? null,
-      entry.tokens_in ?? null,
-      entry.tokens_out ?? null,
-    );
-  return result.lastInsertRowid as number;
+}): void {
+  try {
+    getDb()
+      .prepare(`
+        INSERT INTO audit_log (type, channel_id, channel_name, model, input_summary, output_json, result, tokens_in, tokens_out)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        entry.type,
+        entry.channel_id ?? null,
+        entry.channel_name ?? null,
+        entry.model ?? null,
+        entry.input_summary ?? null,
+        entry.output_json ?? null,
+        entry.result ?? null,
+        entry.tokens_in ?? null,
+        entry.tokens_out ?? null,
+      );
+  } catch (err) {
+    console.error('[Audit] Failed to write audit log:', err);
+  }
 }
 
 export function getRecentAudit(hours: number = 24, type?: string): AuditEntry[] {

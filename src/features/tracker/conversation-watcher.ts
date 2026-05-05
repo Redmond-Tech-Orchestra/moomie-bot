@@ -235,8 +235,12 @@ async function processConversation(channelId: string, messages: BufferedMessage[
     return `[${m.timestamp.toISOString()}] ${m.authorName}${replyTag}: ${m.content}`;
   }).join('\n');
 
+  // Resolve channel name for audit context
+  const cachedChannel = discordClient.channels.cache.get(channelId) as TextChannel | undefined;
+  const channelName = cachedChannel?.name;
+
   // Call Gemini
-  const result = await callGemini(apiKey, transcript, eventsContext, openItemsContext, channelId);
+  const result = await callGemini(apiKey, transcript, eventsContext, openItemsContext, channelId, channelName);
   if (!result) return;
 
   // Nothing actionable at all
