@@ -64,7 +64,7 @@ function createMcpServer(): McpServer {
     description: 'Query the audit log of LLM calls (extraction, dedup, chat). Returns recent entries.',
     inputSchema: {
       hours: z.number().default(24).describe('How many hours back to look'),
-      type: z.enum(['extraction', 'dedup', 'chat']).optional().describe('Filter by audit type'),
+      type: z.enum(['extraction', 'dedup', 'chat', 'outcome']).optional().describe('Filter by audit type'),
     },
   }, async ({ hours, type }) => {
     const entries = getRecentAudit(hours, type);

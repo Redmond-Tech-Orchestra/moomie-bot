@@ -709,6 +709,16 @@ async function confirmExtraction(pending: PendingExtraction, _client: Client): P
   } catch { /* best effort */ }
 
   pendingExtractions.delete(pending.messageId);
+
+  const channelName = (_client.channels.cache.get(pending.channelId) as TextChannel | undefined)?.name;
+  logAudit({
+    type: 'outcome',
+    channel_id: pending.channelId,
+    channel_name: channelName,
+    result: `confirmed: ${inserted} inserted, ${skipped} skipped, ${updated} updated, ${pending.matchedCompletions.length} completions`,
+    input_summary: `${pending.items.length} items, ${pending.completions.length} completions proposed`,
+  });
+
   console.log(`[Tracker] Extraction confirmed: ${inserted} inserted, ${skipped} skipped, ${updated} updated, ${pending.matchedCompletions.length} completions`);
 }
 
@@ -724,6 +734,15 @@ async function dismissExtraction(pending: PendingExtraction, _client: Client): P
   } catch { /* best effort */ }
 
   pendingExtractions.delete(pending.messageId);
+
+  const channelName = (_client.channels.cache.get(pending.channelId) as TextChannel | undefined)?.name;
+  logAudit({
+    type: 'outcome',
+    channel_id: pending.channelId,
+    channel_name: channelName,
+    result: `dismissed: ${pending.items.length} items, ${pending.matchedCompletions.length} completions rejected`,
+  });
+
   console.log(`[Tracker] Extraction dismissed`);
 }
 
@@ -772,5 +791,16 @@ async function autoResolve(messageId: string): Promise<void> {
   } catch { /* best effort */ }
 
   pendingExtractions.delete(messageId);
+
+  const ambiguousCount = pending.items.length - confidentItems.length;
+  const channelName = (discordClient.channels.cache.get(pending.channelId) as TextChannel | undefined)?.name;
+  logAudit({
+    type: 'outcome',
+    channel_id: pending.channelId,
+    channel_name: channelName,
+    result: `auto-resolved: ${inserted} inserted, ${skipped} skipped, ${updated} updated, ${ambiguousCount} ambiguous dropped`,
+    input_summary: `${pending.items.length} items proposed (${confidentItems.length} confident, ${ambiguousCount} ambiguous)`,
+  });
+
   console.log(`[Tracker] Auto-resolved: ${inserted} inserted, ${skipped} skipped, ${updated} updated, ${confidentItems.length - inserted - skipped - updated} dropped`);
 }
