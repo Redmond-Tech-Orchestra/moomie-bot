@@ -144,16 +144,39 @@ export async function startDiscord(): Promise<void> {
     const isDM = !message.guild;
     const isMentioned = message.mentions.has(client.user!);
 
-    if (!isDM && !isMentioned) return;
+    // Check if replying to a Moomie message (fetch once, reuse below)
+    let referencedBotContent: string | null = null;
+    if (message.reference?.messageId) {
+      try {
+        const refMsg = await message.channel.messages.fetch(message.reference.messageId);
+        if (refMsg.author.id === client.user!.id) {
+          referencedBotContent = refMsg.content;
+        }
+      } catch { /* referenced message may be deleted */ }
+    }
+
+    // Respond to: DMs, @mentions, or direct replies to Moomie.
+    // For replies, only trigger if the user isn't @mentioning other people
+    // (they're probably talking to someone else and just quoting Moomie).
+    const isDirectReplyToBot = referencedBotContent !== null
+      && message.mentions.users.filter((u) => !u.bot).size === 0;
+
+    if (!isDM && !isMentioned && !isDirectReplyToBot) return;
 
     // Strip the bot mention from the message content
-    const content = message.content
+    let content = message.content
       .replace(new RegExp(`<@!?${client.user!.id}>`, 'g'), '')
       .trim();
 
     if (!content) {
       await message.reply('Moo! 🐄');
       return;
+    }
+
+    // If replying to a Moomie message, include it as context so the LLM
+    // can see what's being referenced (useful for feedback/corrections)
+    if (referencedBotContent) {
+      content = `[Replying to Moomie's message: "${referencedBotContent.slice(0, 1000)}"]\n\n${content}`;
     }
 
     try {

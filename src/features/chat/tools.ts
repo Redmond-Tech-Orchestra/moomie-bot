@@ -17,6 +17,7 @@ import {
   type TrackerEvent,
 } from '../tracker/store.js';
 import { addReminder, parseReminder } from '../remind/scheduler.js';
+import { executeFeedback } from '../feedback/handle-command.js';
 
 // ─── Tool Definitions (Gemini function calling schema) ───────────────────────
 
@@ -120,6 +121,18 @@ export const toolDeclarations = [
       required: ['message', 'time'],
     },
   },
+  {
+    name: 'submit_feedback',
+    description: 'Submit feedback about something Moomie did wrong. Use this when a user says Moomie made a mistake, gave a wrong answer, misunderstood something, or needs to be corrected. Moomie will file a GitHub issue and attempt to self-patch. Include the message being corrected if the user is replying to one.',
+    parameters: {
+      type: 'object',
+      properties: {
+        feedback: { type: 'string', description: 'What Moomie got wrong, described clearly' },
+        referenced_message: { type: 'string', description: 'The Moomie message being corrected, if available' },
+      },
+      required: ['feedback'],
+    },
+  },
 ];
 
 // ─── Tool Execution ──────────────────────────────────────────────────────────
@@ -140,6 +153,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
     case 'read_channel_messages': return readChannelMessages(args);
     case 'list_channels': return listChannels(args);
     case 'create_reminder': return createReminderTool(args, ctx);
+    case 'submit_feedback': return submitFeedbackTool(args, ctx);
     default: return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
 }
@@ -314,4 +328,36 @@ function createReminderTool(args: Record<string, unknown>, ctx: ToolCallContext)
     success: true,
     message: `Reminder set for ${parsed.date.toISOString()}: "${message}"`,
   });
+}
+
+async function submitFeedbackTool(args: Record<string, unknown>, ctx: ToolCallContext): Promise<string> {
+  const feedback = args.feedback as string;
+  if (!feedback) return JSON.stringify({ error: 'feedback is required' });
+
+  const referencedMessage = args.referenced_message as string | undefined;
+
+  try {
+    const guild = client.guilds.cache.get(DISCORD_GUILD_ID);
+    const channel = guild?.channels.cache.get(ctx.channelId);
+    const channelName = (channel && 'name' in channel) ? (channel as TextChannel).name : ctx.channelId;
+
+    const issueUrl = await executeFeedback({
+      feedback,
+      channelId: ctx.channelId,
+      channelName,
+      userId: ctx.userId,
+      userName: ctx.userName,
+      platform: 'discord',
+      referencedMessage,
+    });
+
+    return JSON.stringify({
+      success: true,
+      issue_url: issueUrl,
+      message: `Feedback filed and self-investigation started. Issue: ${issueUrl}`,
+    });
+  } catch (err) {
+    console.error('[Feedback] Tool call failed:', err);
+    return JSON.stringify({ error: 'Failed to submit feedback. Try /feedback instead.' });
+  }
 }
