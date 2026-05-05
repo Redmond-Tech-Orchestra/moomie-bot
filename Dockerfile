@@ -31,4 +31,4 @@ ENV DB_PATH=/app/data/moomie.db
 
 EXPOSE 3000
 
-CMD ["node", "dist/index.js"]
+CMD ["sh", "-c", "node dist/deploy-commands.js && node dist/index.js"]
