@@ -100,11 +100,23 @@ async function fire(reminder: Reminder): Promise<void> {
 }
 
 /**
+ * Return the current UTC offset in minutes for America/Los_Angeles,
+ * accounting for daylight saving time.
+ */
+function getSeattleOffset(): number {
+  const now = new Date();
+  const utc = new Date(now.toLocaleString('en-US', { timeZone: 'UTC' }));
+  const seattle = new Date(now.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+  return (seattle.getTime() - utc.getTime()) / 60_000;
+}
+
+/**
  * Parse natural language text into { date, message }.
  * Uses chrono-node for flexible parsing.
+ * Times are interpreted in the America/Los_Angeles (Seattle) timezone.
  */
 export function parseReminder(input: string): ParsedReminder | null {
-  const results = chrono.parse(input);
+  const results = chrono.parse(input, { timezone: getSeattleOffset() });
   if (results.length === 0) return null;
 
   const parsed = results[0];

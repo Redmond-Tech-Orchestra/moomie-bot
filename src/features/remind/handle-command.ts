@@ -38,7 +38,7 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
     const where = ctx.targetChannelId ? ` in <#${remindChannelId}>` : '';
     await ctx.reply(`Got it — I'll remind ${who} <t:${timestamp}:R>${where}: "${result.message}"`);
   } else {
-    const dateStr = result.date.toLocaleString();
+    const dateStr = result.date.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' });
     const who = isSelf ? 'you' : `@${ctx.targetUserId}`;
     await ctx.reply(`Got it — I'll remind ${who} at ${dateStr}: "${result.message}"`);
   }
