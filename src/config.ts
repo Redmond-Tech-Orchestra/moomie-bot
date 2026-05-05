@@ -15,6 +15,7 @@ export const ARCHIVED_CATEGORY_ID = process.env.ARCHIVED_CATEGORY_ID || '1314827
 // GitHub
 export const GITHUB_OWNER = process.env.GITHUB_OWNER || 'Redmond-Tech-Orchestra';
 export const GITHUB_REPO = process.env.GITHUB_REPO || 'redmond-tech-orchestra.github.io';
+export const GITHUB_BOT_REPO = process.env.GITHUB_BOT_REPO || 'moomie-bot';
 export const GITHUB_APP_ID = process.env.GITHUB_APP_ID || '3591863';
 export const GITHUB_APP_INSTALLATION_ID = process.env.GITHUB_APP_INSTALLATION_ID || '129284193';
 

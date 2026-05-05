@@ -143,17 +143,32 @@ export async function startDiscord(): Promise<void> {
 
     const isDM = !message.guild;
     const isMentioned = message.mentions.has(client.user!);
+    // Also respond when a user replies to one of Moomie's messages
+    const isReplyToBot = message.reference?.messageId
+      ? (await message.channel.messages.fetch(message.reference.messageId).catch(() => null))?.author?.id === client.user!.id
+      : false;
 
-    if (!isDM && !isMentioned) return;
+    if (!isDM && !isMentioned && !isReplyToBot) return;
 
     // Strip the bot mention from the message content
-    const content = message.content
+    let content = message.content
       .replace(new RegExp(`<@!?${client.user!.id}>`, 'g'), '')
       .trim();
 
     if (!content) {
       await message.reply('Moo! 🐄');
       return;
+    }
+
+    // If replying to a Moomie message, include it as context so the LLM
+    // can see what's being referenced (useful for feedback/corrections)
+    if (message.reference?.messageId) {
+      try {
+        const refMsg = await message.channel.messages.fetch(message.reference.messageId);
+        if (refMsg.author.id === client.user!.id) {
+          content = `[Replying to Moomie's message: "${refMsg.content.slice(0, 1000)}"]\n\n${content}`;
+        }
+      } catch { /* referenced message may be deleted */ }
     }
 
     try {

@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { startDiscord, client } from './adapters/discord.js';
 import { startServer } from './webhook-server.js';
-import { warmupRepo, forceResetQueue } from './features/website/job-runner.js';
+import { warmupRepo, forceResetQueue } from './features/coding/job-runner.js';
 import { getDb } from './db.js';
 
 // ─── Validate required env vars (secrets only — non-secrets have defaults in config.ts) ──

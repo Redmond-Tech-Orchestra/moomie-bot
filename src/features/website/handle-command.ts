@@ -1,7 +1,7 @@
 import type { CommandContext } from '../../types.js';
-import { createIssue } from './github-client.js';
-import { trackIssue } from './issue-tracker.js';
-import { generateIssueTitle } from './title-generator.js';
+import { createIssue } from '../coding/github-client.js';
+import { trackIssue } from '../coding/issue-tracker.js';
+import { generateIssueTitle } from '../coding/title-generator.js';
 import { saveAttachment } from './attachment-store.js';
 
 export const name = 'website';
