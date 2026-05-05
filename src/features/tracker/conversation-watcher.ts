@@ -1,7 +1,8 @@
 import type { Client, Message, TextChannel } from 'discord.js';
 import { ChannelType, MessageFlags } from 'discord.js';
 import { loadPrompt } from '../../prompts/load-prompt.js';
-import { ARCHIVED_CATEGORY_ID } from '../../config.js';
+import { ARCHIVED_CATEGORY_ID, MODEL_EXTRACT, MODEL_DEDUP, geminiUrl } from '../../config.js';
+import { logAudit } from '../admin/audit-store.js';
 import {
   getActiveEvents,
   getOpenItemsForEvent,
@@ -22,8 +23,6 @@ const MAX_BUFFER = 50;                         // Oldest messages roll off past 
 const RATE_LIMIT_MS = 60 * 60 * 1000;         // Max 1 extraction per channel per hour
 const CONFIRMATION_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours to respond
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
-
 // ─── In-Memory Buffers ──────────────────────────────────────────────────────
 
 interface BufferedMessage {
@@ -31,6 +30,7 @@ interface BufferedMessage {
   authorId: string;
   content: string;
   timestamp: Date;
+  replyTo: string | null; // display name of the author being replied to
 }
 
 interface ChannelBuffer {
@@ -153,11 +153,22 @@ function bufferMessage(message: Message): void {
 
   const buf = buffers.get(channelId)!;
 
+  // Resolve reply target name if this message is a reply
+  let replyTo: string | null = null;
+  if (message.reference?.messageId) {
+    const ref = message.mentions.repliedUser;
+    if (ref) {
+      const member = message.guild?.members.cache.get(ref.id);
+      replyTo = member?.displayName ?? ref.username;
+    }
+  }
+
   buf.messages.push({
     authorName: message.member?.displayName ?? message.author.username,
     authorId: message.author.id,
     content: message.content,
     timestamp: message.createdAt,
+    replyTo,
   });
 
   // Roll off oldest messages
@@ -219,12 +230,17 @@ async function processConversation(channelId: string, messages: BufferedMessage[
   const openItemsContext = buildOpenItemsContext(events);
 
   // Build transcript
-  const transcript = messages.map((m) =>
-    `[${m.timestamp.toISOString()}] ${m.authorName}: ${m.content}`
-  ).join('\n');
+  const transcript = messages.map((m) => {
+    const replyTag = m.replyTo ? ` [reply to ${m.replyTo}]` : '';
+    return `[${m.timestamp.toISOString()}] ${m.authorName}${replyTag}: ${m.content}`;
+  }).join('\n');
+
+  // Resolve channel name for audit context
+  const cachedChannel = discordClient.channels.cache.get(channelId) as TextChannel | undefined;
+  const channelName = cachedChannel?.name;
 
   // Call Gemini
-  const result = await callGemini(apiKey, transcript, eventsContext, openItemsContext);
+  const result = await callGemini(apiKey, transcript, eventsContext, openItemsContext, channelId, channelName);
   if (!result) return;
 
   // Nothing actionable at all
@@ -261,6 +277,20 @@ async function processConversation(channelId: string, messages: BufferedMessage[
     const nudgeMessage = formatNudges(nudges, nameToId);
     if (nudgeMessage) {
       try { await channel.send({ content: nudgeMessage, flags: sendFlags() }); } catch { /* best effort */ }
+    }
+
+    // Create unassigned tracked items for needs_owner nudges so they appear on the board
+    for (const nudge of nudges) {
+      if (nudge.type === 'needs_owner') {
+        const event = resolveEvent(nudge.event, events);
+        createItem({
+          event_id: event?.id ?? null,
+          description: nudge.message,
+          source: 'nudge',
+          source_channel: channelId,
+          source_date: new Date().toISOString().slice(0, 10),
+        });
+      }
     }
     return;
   }
@@ -300,6 +330,15 @@ function buildEventsContext(events: TrackerEvent[]): string {
 
 function buildOpenItemsContext(events: TrackerEvent[]): string {
   const sections: string[] = [];
+
+  // Include org-wide items (no event association)
+  const orgItems = getAllOpenItems().filter(i => !i.event_id);
+  if (orgItems.length > 0) {
+    sections.push('Org-wide open items:\n' + orgItems.map((i) =>
+      `- [#${i.id}] ${i.description}${i.owner_name ? ` (owner: ${i.owner_name})` : ''}`
+    ).join('\n'));
+  }
+
   for (const event of events) {
     const items = getOpenItemsForEvent(event.id);
     if (items.length === 0) continue;
@@ -315,14 +354,21 @@ async function callGemini(
   transcript: string,
   eventsContext: string,
   openItemsContext: string,
+  channelId: string,
+  channelName?: string,
 ): Promise<ExtractionResult | null> {
   const systemPrompt = loadPrompt('burst-extraction.md', {
     EVENTS_CONTEXT: eventsContext,
     OPEN_ITEMS_CONTEXT: openItemsContext,
   });
 
+  // Truncate transcript for audit log (keep first 500 chars)
+  const inputSummary = transcript.length > 500
+    ? transcript.slice(0, 500) + `... (${transcript.length} chars total)`
+    : transcript;
+
   try {
-    const res = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+    const res = await fetch(`${geminiUrl(MODEL_EXTRACT)}?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -337,16 +383,35 @@ async function callGemini(
     if (!res.ok) {
       const body = await res.text();
       console.error(`[Tracker] Gemini API error ${res.status}:`, body);
+      logAudit({ type: 'extraction', channel_id: channelId, channel_name: channelName, model: MODEL_EXTRACT, input_summary: inputSummary, result: `API error ${res.status}` });
       return null;
     }
 
     const data = await res.json() as {
       candidates?: { content?: { parts?: { text?: string }[] } }[];
+      usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
     };
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
     if (!text) return null;
 
     const parsed = JSON.parse(text) as ExtractionResult;
+
+    // Audit log the extraction
+    const itemCount = parsed.items?.length ?? 0;
+    const completionCount = parsed.completions?.length ?? 0;
+    const nudgeCount = parsed.nudges?.length ?? 0;
+    logAudit({
+      type: 'extraction',
+      channel_id: channelId,
+      channel_name: channelName,
+      model: MODEL_EXTRACT,
+      input_summary: inputSummary,
+      output_json: text,
+      result: `${itemCount} items, ${completionCount} completions, ${nudgeCount} nudges`,
+      tokens_in: data.usageMetadata?.promptTokenCount,
+      tokens_out: data.usageMetadata?.candidatesTokenCount,
+    });
+
     return parsed;
   } catch (err) {
     console.error('[Tracker] Gemini extraction call failed:', err);
@@ -398,7 +463,7 @@ async function dedupItems(
   }
 
   try {
-    const res = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+    const res = await fetch(`${geminiUrl(MODEL_DEDUP)}?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -415,6 +480,7 @@ async function dedupItems(
 
     const data = await res.json() as {
       candidates?: { content?: { parts?: { text?: string }[] } }[];
+      usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
     };
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
     if (!text) {
@@ -422,6 +488,20 @@ async function dedupItems(
     }
 
     const parsed = JSON.parse(text) as { results: DedupResult[] };
+
+    // Audit log the dedup call
+    const dupes = parsed.results.filter(r => r.verdict === 'duplicate').length;
+    const updates = parsed.results.filter(r => r.verdict === 'update').length;
+    logAudit({
+      type: 'dedup',
+      model: MODEL_DEDUP,
+      input_summary: `${newItems.length} new vs ${existingItems.length} existing`,
+      output_json: text,
+      result: `${dupes} dupes, ${updates} updates, ${parsed.results.length - dupes - updates} new`,
+      tokens_in: data.usageMetadata?.promptTokenCount,
+      tokens_out: data.usageMetadata?.candidatesTokenCount,
+    });
+
     return parsed.results;
   } catch (err) {
     console.error('[Tracker] Dedup call failed:', err);
@@ -629,6 +709,16 @@ async function confirmExtraction(pending: PendingExtraction, _client: Client): P
   } catch { /* best effort */ }
 
   pendingExtractions.delete(pending.messageId);
+
+  const channelName = (_client.channels.cache.get(pending.channelId) as TextChannel | undefined)?.name;
+  logAudit({
+    type: 'outcome',
+    channel_id: pending.channelId,
+    channel_name: channelName,
+    result: `confirmed: ${inserted} inserted, ${skipped} skipped, ${updated} updated, ${pending.matchedCompletions.length} completions`,
+    input_summary: `${pending.items.length} items, ${pending.completions.length} completions proposed`,
+  });
+
   console.log(`[Tracker] Extraction confirmed: ${inserted} inserted, ${skipped} skipped, ${updated} updated, ${pending.matchedCompletions.length} completions`);
 }
 
@@ -644,6 +734,15 @@ async function dismissExtraction(pending: PendingExtraction, _client: Client): P
   } catch { /* best effort */ }
 
   pendingExtractions.delete(pending.messageId);
+
+  const channelName = (_client.channels.cache.get(pending.channelId) as TextChannel | undefined)?.name;
+  logAudit({
+    type: 'outcome',
+    channel_id: pending.channelId,
+    channel_name: channelName,
+    result: `dismissed: ${pending.items.length} items, ${pending.matchedCompletions.length} completions rejected`,
+  });
+
   console.log(`[Tracker] Extraction dismissed`);
 }
 
@@ -692,5 +791,16 @@ async function autoResolve(messageId: string): Promise<void> {
   } catch { /* best effort */ }
 
   pendingExtractions.delete(messageId);
+
+  const ambiguousCount = pending.items.length - confidentItems.length;
+  const channelName = (discordClient.channels.cache.get(pending.channelId) as TextChannel | undefined)?.name;
+  logAudit({
+    type: 'outcome',
+    channel_id: pending.channelId,
+    channel_name: channelName,
+    result: `auto-resolved: ${inserted} inserted, ${skipped} skipped, ${updated} updated, ${ambiguousCount} ambiguous dropped`,
+    input_summary: `${pending.items.length} items proposed (${confidentItems.length} confident, ${ambiguousCount} ambiguous)`,
+  });
+
   console.log(`[Tracker] Auto-resolved: ${inserted} inserted, ${skipped} skipped, ${updated} updated, ${confidentItems.length - inserted - skipped - updated} dropped`);
 }

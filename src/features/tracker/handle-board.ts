@@ -1,8 +1,7 @@
 import type { CommandContext } from '../../types.js';
 import { loadPrompt } from '../../prompts/load-prompt.js';
+import { MODEL_CHAT, geminiUrl } from '../../config.js';
 import { getActiveEvents, getItemsForEvent, getAllOpenItems, getOrphanItems, type TrackerEvent, type TrackerItem } from './store.js';
-
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
 export const name = 'board';
 export const description = 'Event-centric status board';
@@ -88,7 +87,7 @@ async function getConsolidatedBoard(events: TrackerEvent[]): Promise<string | nu
   }, true);
 
   try {
-    const res = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+    const res = await fetch(`${geminiUrl(MODEL_CHAT)}?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
