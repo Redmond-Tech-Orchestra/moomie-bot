@@ -4,6 +4,9 @@ import { trackIssue } from '../coding/issue-tracker.js';
 import { generateIssueTitle } from '../coding/title-generator.js';
 import { runCodingTask } from '../coding/job-runner.js';
 import { GITHUB_OWNER, GITHUB_BOT_REPO, PORT } from '../../config.js';
+import { createLogger } from '../../logger.js';
+
+const log = createLogger('Feedback');
 
 export const name = 'feedback';
 export const description = 'Report something Moomie got wrong — she will investigate and try to fix herself';
@@ -60,6 +63,14 @@ export async function executeFeedback(opts: FeedbackOptions): Promise<string> {
     userId: opts.userId,
     platform: opts.platform,
     conversationRef: opts.conversationRef,
+  });
+
+  log.audit({
+    type: 'feedback',
+    channel_id: opts.channelId,
+    channel_name: opts.channelName,
+    input_summary: opts.feedback.slice(0, 500),
+    result: `Issue #${issue.number}: ${issue.html_url}`,
   });
 
   // 3. Build the agent prompt — tells it to use MCP for self-investigation
@@ -123,12 +134,12 @@ export async function executeFeedback(opts: FeedbackOptions): Promise<string> {
     repo: GITHUB_BOT_REPO,
   }).then((result) => {
     if (result.success) {
-      console.log(`[Feedback] Self-patch PR created for #${issue.number}: ${result.prUrl}`);
+      log.info(`Self-patch PR created for #${issue.number}: ${result.prUrl}`);
     } else {
-      console.error(`[Feedback] Self-patch failed for #${issue.number}: ${result.error}`);
+      log.error(`Self-patch failed for #${issue.number}: ${result.error}`);
     }
   }).catch((err) => {
-    console.error('[Feedback] Coding task failed:', err);
+    log.error('Coding task failed:', err);
   });
 
   return issue.html_url;
@@ -160,7 +171,7 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
       `Got it — I'm investigating and will try to fix myself. 🐄\nIssue: ${issueUrl}\nI'll follow up with a PR when I'm done.`
     );
   } catch (err) {
-    console.error('[Feedback] Command failed:', err);
+    log.error('Command failed:', err);
     await ctx.editReply('Something went wrong processing the feedback. Check the logs.');
   }
 }

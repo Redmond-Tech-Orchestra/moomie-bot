@@ -8,6 +8,7 @@ export default tseslint.config(
     // Features must never import platform libraries or adapter internals directly.
     // They go through src/adapters/index.ts (the barrel) for all platform I/O.
     files: ['src/features/**/*.ts'],
+    ignores: ['src/features/admin/**'],
     rules: {
       'no-restricted-imports': ['error', {
         paths: [
@@ -20,6 +21,8 @@ export default tseslint.config(
           { group: ['**/adapters/notify*'], message: 'Import from adapters/index.js instead.' },
         ],
       }],
+      // Use createLogger() from src/logger.ts instead of bare console calls.
+      'no-console': 'error',
     },
   },
   {

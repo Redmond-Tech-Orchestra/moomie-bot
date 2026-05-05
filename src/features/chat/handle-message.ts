@@ -1,7 +1,9 @@
 import { loadPrompt } from '../../prompts/load-prompt.js';
 import { toolDeclarations, executeTool } from './tools.js';
 import { MODEL_CHAT, geminiUrl } from '../../config.js';
-import { logAudit } from '../admin/audit-store.js';
+import { createLogger } from '../../logger.js';
+
+const log = createLogger('Chat');
 
 const MAX_TOOL_ROUNDS = 5;
 
@@ -56,7 +58,7 @@ export async function handleChatMessage(message: ChatMessage): Promise<string> {
       // Text response — we're done
       const textPart = parts.find((p: Record<string, unknown>) => p.text);
       const reply = (textPart?.text as string) || "Moo.";
-      logAudit({
+      log.audit({
         type: 'chat',
         channel_id: message.channelId,
         channel_name: message.channelName,
@@ -109,13 +111,13 @@ async function callGemini(
 
     if (!res.ok) {
       const body = await res.text();
-      console.error(`[Chat] Gemini API error ${res.status}:`, body);
+      log.error(`Gemini API error ${res.status}:`, body);
       return null;
     }
 
     return await res.json() as GeminiResponse;
   } catch (err) {
-    console.error('[Chat] Gemini call failed:', err);
+    log.error('Gemini call failed:', err);
     return null;
   }
 }

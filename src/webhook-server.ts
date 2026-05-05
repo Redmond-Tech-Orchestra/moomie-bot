@@ -128,7 +128,7 @@ async function handlePullRequest(pr: { body?: string; html_url: string }, repo?:
 const TRIGGER_LABEL = 'moomie-bot';
 
 async function handleIssueLabelAdded(
-  payload: { issue: { number: number; title: string; body?: string; html_url: string; labels?: { name: string }[] }; label: { name: string }; sender: { login: string }; repository?: { name: string } },
+  payload: { issue: { number: number; title: string; body?: string; html_url: string; labels?: { name: string }[] }; label: { name: string }; sender: { login: string; type?: string }; repository?: { name: string } },
 ): Promise<void> {
   if (payload.label.name !== TRIGGER_LABEL) return;
 
@@ -138,8 +138,12 @@ async function handleIssueLabelAdded(
   const { issue, sender } = payload;
   const repoName = payload.repository?.name || GITHUB_REPO;
 
-  // Only allow org members to trigger the agent
-  if (!await isOrgMember(sender.login)) {
+  // Allow GitHub App bot accounts (sender.type === 'Bot') to trigger the agent.
+  // The webhook signature guarantees this field is set by GitHub, not spoofable.
+  const isBotApp = sender.type === 'Bot';
+
+  // Only allow org members (or a GitHub App bot) to trigger the agent
+  if (!isBotApp && !await isOrgMember(sender.login)) {
     console.log(`[Webhook] Ignoring label from non-org-member: ${sender.login}`);
     return;
   }

@@ -18,6 +18,9 @@ import {
 } from '../tracker/store.js';
 import { addReminder, parseReminder } from '../remind/scheduler.js';
 import { executeFeedback } from '../feedback/handle-command.js';
+import { createLogger } from '../../logger.js';
+
+const log = createLogger('Chat');
 
 // ─── Tool Definitions (Gemini function calling schema) ───────────────────────
 
@@ -357,7 +360,7 @@ async function submitFeedbackTool(args: Record<string, unknown>, ctx: ToolCallCo
       message: `Feedback filed and self-investigation started. Issue: ${issueUrl}`,
     });
   } catch (err) {
-    console.error('[Feedback] Tool call failed:', err);
+    log.error('Feedback tool call failed:', err);
     return JSON.stringify({ error: 'Failed to submit feedback. Try /feedback instead.' });
   }
 }
