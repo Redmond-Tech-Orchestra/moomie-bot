@@ -10,6 +10,9 @@ import { getUploadsDir } from './features/website/attachment-store.js';
 import { initNotifications, notifyUser } from './adapters/index.js';
 import { mountMcp } from './features/admin/mcp-server.js';
 import { PORT, GITHUB_REPO } from './config.js';
+import { createLogger } from './logger.js';
+
+const log = createLogger('Webhook');
 
 interface WebhookRequest extends Request {
   rawBody?: Buffer;
@@ -32,7 +35,7 @@ export function startServer(discordClient: Client): express.Express {
   app.use('/webhook', (req: WebhookRequest, res: Response, next: NextFunction) => {
     const secret = process.env.GITHUB_WEBHOOK_SECRET;
     if (!secret) {
-      console.warn('[Webhook] GITHUB_WEBHOOK_SECRET not set — skipping signature verification');
+      log.warn('GITHUB_WEBHOOK_SECRET not set — skipping signature verification');
       return next();
     }
 
@@ -97,7 +100,7 @@ export function startServer(discordClient: Client): express.Express {
 
   const port = PORT;
   app.listen(port, () => {
-    console.log(`Server listening on port ${port}`);
+    log.info(`Server listening on port ${port}`);
   });
 
   return app;
@@ -120,7 +123,7 @@ async function handlePullRequest(pr: { body?: string; html_url: string }, repo?:
       await notifyUser(tracked, `PR is ready for issue #${issueNumber}: ${pr.html_url}`);
       untrackIssue(issueNumber, repoName);
     } catch (err) {
-      console.error(`Failed to notify user for issue #${issueNumber}:`, err);
+      log.error(`Failed to notify user for issue #${issueNumber}:`, err);
     }
   }
 }
@@ -128,7 +131,7 @@ async function handlePullRequest(pr: { body?: string; html_url: string }, repo?:
 const TRIGGER_LABEL = 'moomie-bot';
 
 async function handleIssueLabelAdded(
-  payload: { issue: { number: number; title: string; body?: string; html_url: string; labels?: { name: string }[] }; label: { name: string }; sender: { login: string }; repository?: { name: string } },
+  payload: { issue: { number: number; title: string; body?: string; html_url: string; labels?: { name: string }[] }; label: { name: string }; sender: { login: string; type?: string }; repository?: { name: string } },
 ): Promise<void> {
   if (payload.label.name !== TRIGGER_LABEL) return;
 
@@ -138,13 +141,17 @@ async function handleIssueLabelAdded(
   const { issue, sender } = payload;
   const repoName = payload.repository?.name || GITHUB_REPO;
 
-  // Only allow org members to trigger the agent
-  if (!await isOrgMember(sender.login)) {
-    console.log(`[Webhook] Ignoring label from non-org-member: ${sender.login}`);
+  // Allow GitHub App bot accounts (sender.type === 'Bot') to trigger the agent.
+  // The webhook signature guarantees this field is set by GitHub, not spoofable.
+  const isBotApp = sender.type === 'Bot';
+
+  // Only allow org members (or a GitHub App bot) to trigger the agent
+  if (!isBotApp && !await isOrgMember(sender.login)) {
+    log.info(`Ignoring label from non-org-member: ${sender.login}`);
     return;
   }
 
-  console.log(`[Webhook] Label "${TRIGGER_LABEL}" added to #${issue.number} by ${sender.login}`);
+  log.info(`Label "${TRIGGER_LABEL}" added to #${issue.number} by ${sender.login}`);
 
   // Notify initiator if tracked
   const tracked = getTrackedIssue(issue.number, repoName);
@@ -152,7 +159,7 @@ async function handleIssueLabelAdded(
     try {
       await notifyUser(tracked, `Moomie is working on issue #${issue.number}: ${issue.html_url}`);
     } catch (err) {
-      console.error(`[Webhook] Failed to notify user for #${issue.number}:`, err);
+      log.error(`Failed to notify user for #${issue.number}:`, err);
     }
   }
 
@@ -175,26 +182,26 @@ async function handleIssueLabelAdded(
     repo: repoName,
   }).then(async (result) => {
     if (result.success) {
-      console.log(`[Webhook] PR created for #${issue.number}: ${result.prUrl}`);
+      log.info(`PR created for #${issue.number}: ${result.prUrl}`);
       if (tracked) {
         try {
           await notifyUser(tracked, `PR ready for issue #${issue.number}: ${result.prUrl}`);
         } catch (err) {
-          console.error(`[Webhook] Failed to notify user for PR on #${issue.number}:`, err);
+          log.error(`Failed to notify user for PR on #${issue.number}:`, err);
         }
       }
     } else {
-      console.error(`[Webhook] Agent failed for #${issue.number}: ${result.error}`);
+      log.error(`Agent failed for #${issue.number}: ${result.error}`);
       if (tracked) {
         try {
           await notifyUser(tracked, `Agent couldn't complete #${issue.number}: ${result.error}`);
         } catch (err) {
-          console.error(`[Webhook] Failed to notify user for failure on #${issue.number}:`, err);
+          log.error(`Failed to notify user for failure on #${issue.number}:`, err);
         }
       }
     }
   }).catch((err) => {
-    console.error(`[Webhook] Unexpected error for #${issue.number}:`, err);
+    log.error(`Unexpected error for #${issue.number}:`, err);
   });
 }
 
@@ -202,6 +209,6 @@ function handleIssueLabelRemoved(
   payload: { issue: { number: number }; label: { name: string } },
 ): void {
   if (payload.label.name !== TRIGGER_LABEL) return;
-  console.log(`[Webhook] Label "${TRIGGER_LABEL}" removed from #${payload.issue.number}`);
+  log.info(`Label "${TRIGGER_LABEL}" removed from #${payload.issue.number}`);
   // Future: could cancel in-progress agent work here
 }

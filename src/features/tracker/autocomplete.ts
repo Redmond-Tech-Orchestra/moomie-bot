@@ -1,5 +1,8 @@
 import type { AutocompleteInteraction } from 'discord.js';
 import { getActiveEvents, getOrphanItems } from './store.js';
+import { createLogger } from '../../logger.js';
+
+const log = createLogger('Tracker');
 
 /**
  * Shared autocomplete handler for the 'event' option used across /board, etc.
@@ -35,7 +38,7 @@ export async function autocompleteEvent(interaction: AutocompleteInteraction): P
 
     await interaction.respond(choices.slice(0, 25));
   } catch (err) {
-    console.error('[Tracker] Autocomplete error:', err);
+    log.error('Autocomplete error:', err);
     await interaction.respond([]).catch(() => {});
   }
 }

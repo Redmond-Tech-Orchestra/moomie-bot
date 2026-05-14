@@ -8,6 +8,9 @@ import { autocompleteEvent } from '../features/tracker/autocomplete.js';
 import { registerConversationWatcher } from '../features/tracker/conversation-watcher.js';
 import { handleChatMessage } from '../features/chat/handle-message.js';
 import type { CommandContext } from '../types.js';
+import { createLogger } from '../logger.js';
+
+const log = createLogger('Discord');
 
 export const client = new Client({
   intents: [
@@ -79,7 +82,7 @@ export async function startDiscord(): Promise<void> {
   await loadCommands();
 
   client.once('ready', async () => {
-    console.log(`[Discord] Logged in as ${client.user!.tag}`);
+    log.info(`Logged in as ${client.user!.tag}`);
     initScheduler();
     registerChannelWatcher(client);
     registerEventConfirmationListener(client);
@@ -127,7 +130,7 @@ export async function startDiscord(): Promise<void> {
 
       await handler.execute(ctx, cleaned);
     } catch (err) {
-      console.error(`[Discord] Error executing /${interaction.commandName}:`, err);
+      log.error(`Error executing /${interaction.commandName}:`, err);
       const reply = { content: 'Something went wrong running that command.', ephemeral: true as const };
       if (interaction.replied || interaction.deferred) {
         await interaction.followUp(reply);
@@ -190,7 +193,7 @@ export async function startDiscord(): Promise<void> {
       });
       await message.reply(response);
     } catch (err) {
-      console.error('[Chat] Error handling message:', err);
+      log.error('Error handling message:', err);
       await message.reply('Something went wrong. Moo. 🐄');
     }
   });

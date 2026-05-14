@@ -5,6 +5,9 @@ import { loadPrompt } from '../../prompts/load-prompt.js';
 import { getActiveEvents, getOpenItemsForEvent } from '../tracker/store.js';
 import { DISCORD_GUILD_ID, MODEL_CHAT, geminiUrl } from '../../config.js';
 import * as chrono from 'chrono-node';
+import { createLogger } from '../../logger.js';
+
+const log = createLogger('Digest');
 
 export const name = 'digest';
 export const description = 'Structured summary of recent server activity';
@@ -134,7 +137,7 @@ async function callGemini(transcript: string, window: string): Promise<string> {
 
     if (!res.ok) {
       const body = await res.text();
-      console.error(`[Digest] Gemini API error ${res.status}:`, body);
+      log.error(`Gemini API error ${res.status}:`, body);
       return `*Failed to generate digest (API ${res.status}).*`;
     }
 
@@ -144,7 +147,7 @@ async function callGemini(transcript: string, window: string): Promise<string> {
     return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim()
       || '*No response from model.*';
   } catch (err) {
-    console.error('[Digest] Gemini call failed:', err);
+    log.error('Gemini call failed:', err);
     return '*Failed to generate digest.*';
   }
 }

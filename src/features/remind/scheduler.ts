@@ -1,6 +1,9 @@
 import * as chrono from 'chrono-node';
 import { getDb, registerMigration } from '../../db.js';
 import { notifyUser } from '../../adapters/index.js';
+import { createLogger } from '../../logger.js';
+
+const log = createLogger('Remind');
 
 registerMigration((db) => {
   db.exec(`
@@ -95,7 +98,7 @@ async function fire(reminder: Reminder): Promise<void> {
       `Reminder: ${reminder.message}`,
     );
   } catch (err) {
-    console.error('Failed to send reminder:', err);
+    log.error('Failed to send reminder:', err);
   }
 }
 

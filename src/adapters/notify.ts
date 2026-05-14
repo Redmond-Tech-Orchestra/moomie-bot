@@ -1,5 +1,8 @@
 import type { Client } from 'discord.js';
 import { sendTeamsProactiveMessage } from './teams.js';
+import { createLogger } from '../logger.js';
+
+const log = createLogger('Notify');
 
 export interface NotificationTarget {
   platform: 'discord' | 'teams';
@@ -22,7 +25,7 @@ export async function notifyUser(target: NotificationTarget, message: string): P
   switch (target.platform) {
     case 'teams': {
       if (!target.conversationRef) {
-        console.error(`[Notify] Teams target has no conversationRef — cannot notify`);
+        log.error('Teams target has no conversationRef — cannot notify');
         return;
       }
       await sendTeamsProactiveMessage(target.conversationRef, message);
@@ -30,7 +33,7 @@ export async function notifyUser(target: NotificationTarget, message: string): P
     }
     case 'discord': {
       if (!discordClient) {
-        console.error(`[Notify] Discord client not initialized`);
+        log.error('Discord client not initialized');
         return;
       }
       const channel = await discordClient.channels.fetch(target.channelId);
@@ -42,7 +45,7 @@ export async function notifyUser(target: NotificationTarget, message: string): P
     }
     default: {
       const _exhaustive: never = target.platform;
-      console.error(`[Notify] Unknown platform: ${_exhaustive}`);
+      log.error(`Unknown platform: ${_exhaustive}`);
     }
   }
 }

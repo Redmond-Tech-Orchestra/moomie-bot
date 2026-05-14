@@ -15,6 +15,9 @@ import {
   getRecentAudit,
   getAuditStats,
 } from './audit-store.js';
+import { getRecentLogs, createLogger } from '../../logger.js';
+
+const log = createLogger('MCP');
 
 function createMcpServer(): McpServer {
   const server = new McpServer({
@@ -61,10 +64,10 @@ function createMcpServer(): McpServer {
   });
 
   server.registerTool('query_audit_log', {
-    description: 'Query the audit log of LLM calls (extraction, dedup, chat). Returns recent entries.',
+    description: 'Query the audit log of LLM/bot operations. Returns recent entries.',
     inputSchema: {
       hours: z.number().default(24).describe('How many hours back to look'),
-      type: z.enum(['extraction', 'dedup', 'chat', 'outcome']).optional().describe('Filter by audit type'),
+      type: z.enum(['extraction', 'dedup', 'chat', 'outcome', 'attribution', 'title-gen', 'coding', 'feedback']).optional().describe('Filter by audit type'),
     },
   }, async ({ hours, type }) => {
     const entries = getRecentAudit(hours, type);
@@ -82,6 +85,22 @@ function createMcpServer(): McpServer {
     const stats = getAuditStats(days);
     return {
       content: [{ type: 'text', text: JSON.stringify(stats, null, 2) }],
+    };
+  });
+
+  server.registerTool('query_logs', {
+    description: 'Query operational log lines (info/warn/error). Use to investigate runtime behavior, errors, and operational flow.',
+    inputSchema: {
+      hours: z.number().default(24).describe('How many hours back to look'),
+      tag: z.string().optional().describe('Filter by module tag (e.g. JobRunner, Chat, Tracker, Feedback)'),
+      level: z.enum(['info', 'warn', 'error']).optional().describe('Filter by log level'),
+      search: z.string().optional().describe('Search log messages (substring match)'),
+      limit: z.number().default(100).describe('Max entries to return (max 500)'),
+    },
+  }, async ({ hours, tag, level, search, limit }) => {
+    const entries = getRecentLogs({ hours, tag, level, search, limit });
+    return {
+      content: [{ type: 'text', text: JSON.stringify(entries, null, 2) }],
     };
   });
 
@@ -106,7 +125,7 @@ export function mountMcp(app: Express): void {
         mcpServer.close();
       });
     } catch (error) {
-      console.error('[MCP] Error handling request:', error);
+      log.error('Error handling request:', error);
       if (!res.headersSent) {
         res.status(500).json({
           jsonrpc: '2.0',
@@ -134,5 +153,5 @@ export function mountMcp(app: Express): void {
     });
   });
 
-  console.log('[MCP] Streamable HTTP endpoint mounted at /mcp');
+  log.info('Streamable HTTP endpoint mounted at /mcp');
 }

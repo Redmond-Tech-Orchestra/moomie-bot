@@ -7,6 +7,9 @@ import {
 } from 'botbuilder';
 import { handlers } from '../commands/command-registry.js';
 import type { CommandContext } from '../types.js';
+import { createLogger } from '../logger.js';
+
+const log = createLogger('Teams');
 
 const botFrameworkAuth = new ConfigurationBotFrameworkAuthentication({
   MicrosoftAppId: process.env.TEAMS_APP_ID || '',
@@ -17,7 +20,7 @@ export const adapter = new CloudAdapter(botFrameworkAuth);
 
 // Error handler
 adapter.onTurnError = async (context, error) => {
-  console.error('[Teams] Unhandled error:', error);
+  log.error('Unhandled error:', error);
   await context.sendActivity('Something went wrong. Please try again.');
 };
 
@@ -117,7 +120,7 @@ export async function startTeams(app: import('express').Express): Promise<void> 
     });
   });
 
-  console.log('[Teams] Bot endpoint registered at /api/messages');
+  log.info('Bot endpoint registered at /api/messages');
 }
 
 /**

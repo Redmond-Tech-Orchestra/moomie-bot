@@ -4,6 +4,9 @@ import { trackIssue } from '../coding/issue-tracker.js';
 import { generateIssueTitle } from '../coding/title-generator.js';
 import { saveAttachment } from './attachment-store.js';
 import { GITHUB_REPO } from '../../config.js';
+import { createLogger } from '../../logger.js';
+
+const log = createLogger('Website');
 
 export const name = 'website';
 export const description = 'Create a website issue and have Moomie work on it';
@@ -25,7 +28,7 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
           const { fileName } = await saveAttachment(file);
           uploadedFiles.push({ name: file.name, fileName });
         } catch (err) {
-          console.error(`Failed to save attachment ${file.name}:`, err);
+          log.error(`Failed to save attachment ${file.name}:`, err);
         }
       }
     }
@@ -60,7 +63,7 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
       `Issue created: ${issue.html_url}\nMoomie will start working on it shortly.`
     );
   } catch (err) {
-    console.error('Failed to create issue:', err);
+    log.error('Failed to create issue:', err);
     await ctx.editReply('Something went wrong creating the issue. Check the logs.');
   }
 }

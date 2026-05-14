@@ -6,6 +6,9 @@ import { getAgent } from './agents/index.js';
 import type { AgentResult } from './agents/index.js';
 import { copyToWorkspace, deleteUploads } from '../website/attachment-store.js';
 import { AGENT_WORKSPACE, GITHUB_OWNER, GITHUB_REPO } from '../../config.js';
+import { createLogger } from '../../logger.js';
+
+const log = createLogger('JobRunner');
 
 const WORKSPACE_DIR = path.resolve(AGENT_WORKSPACE);
 const MAX_QUEUE_SIZE = 5;
@@ -43,7 +46,7 @@ async function processQueue(): Promise<void> {
   // Discard stale jobs that have been waiting too long
   while (queue.length > 0 && Date.now() - queue[0].enqueuedAt > JOB_MAX_AGE_MS) {
     const stale = queue.shift()!;
-    console.warn(`[JobRunner] Discarding stale job #${stale.options.issueNumber || '?'} (queued ${Math.round((Date.now() - stale.enqueuedAt) / 60000)}min ago)`);
+    log.warn(`Discarding stale job #${stale.options.issueNumber || '?'} (queued ${Math.round((Date.now() - stale.enqueuedAt) / 60000)}min ago)`);
     stale.resolve({ success: false, error: 'Job expired — it waited too long in the queue.' });
     if (stale.options.attachments?.length) deleteUploads(stale.options.attachments);
   }
@@ -59,7 +62,7 @@ async function processQueue(): Promise<void> {
   const timeoutPromise = new Promise<OrchestratorResult>((resolve) => {
     setTimeout(() => {
       timedOut = true;
-      console.error(`[JobRunner] Job #${job.options.issueNumber || '?'} timed out after ${JOB_TIMEOUT_MS / 60000}min`);
+      log.error(`Job #${job.options.issueNumber || '?'} timed out after ${JOB_TIMEOUT_MS / 60000}min`);
       resolve({ success: false, error: 'Job timed out and was force-cleared.' });
     }, JOB_TIMEOUT_MS);
   });
@@ -166,9 +169,9 @@ export function warmupRepo(): void {
     try {
       const repoDir = await cloneOrPull();
       cleanupLocalBranches(repoDir);
-      console.log(`[Orchestrator] Repo ready at ${repoDir}`);
+      log.info(`Repo ready at ${repoDir}`);
     } catch (err) {
-      console.error('[Orchestrator] Warmup failed (will retry on first job):', err);
+      log.error('Warmup failed (will retry on first job):', err);
     } finally {
       warmupDone = true;
     }
@@ -209,7 +212,7 @@ export function forceResetQueue(): { drained: number } {
   queue.length = 0;
   running = false;
   currentJobStart = null;
-  console.warn(`[JobRunner] Queue force-reset. Drained ${drained} queued jobs.`);
+  log.warn(`Queue force-reset. Drained ${drained} queued jobs.`);
   return { drained };
 }
 
@@ -221,7 +224,7 @@ export function runCodingTask(options: CodingTaskOptions): Promise<OrchestratorR
     });
   }
 
-  console.log(`[JobRunner] Queued job #${options.issueNumber || '?'} (${queue.length + 1} in queue, ${running ? 'one running' : 'idle'})`);
+  log.info(`Queued job #${options.issueNumber || '?'} (${queue.length + 1} in queue, ${running ? 'one running' : 'idle'})`);
 
   return new Promise((resolve, reject) => {
     queue.push({ options, resolve, reject, enqueuedAt: Date.now() });
@@ -237,7 +240,7 @@ async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResu
   const prTitle = title || task.split('\n')[0].slice(0, 80);
   const agent = getAgent();
 
-  console.log(`[Orchestrator] Starting task with ${agent.name} on ${targetRepo}: "${prTitle}"`);
+  log.info(`Starting task with ${agent.name} on ${targetRepo}: "${prTitle}"`);
 
   // 1. Ensure repo is up to date
   let repoDir: string;
@@ -263,7 +266,7 @@ async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResu
       try {
         copyToWorkspace(fileName, destDir);
       } catch (err) {
-        console.warn(`[Orchestrator] Failed to copy attachment ${fileName}:`, err);
+        log.warn(`Failed to copy attachment ${fileName}:`, err);
       }
     }
   }
@@ -343,6 +346,13 @@ async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResu
     git(['checkout', 'main'], repoDir);
     try { git(['branch', '-D', branchName], repoDir); } catch { /* already gone */ }
 
+    log.audit({
+      type: 'coding',
+      model: agent.name,
+      input_summary: `#${issueNumber ?? '?'}: ${prTitle}`.slice(0, 500),
+      result: `PR created: ${pr.html_url}`,
+    });
+
     return {
       success: true,
       prUrl: pr.html_url,
@@ -351,6 +361,12 @@ async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResu
     };
   } catch (err) {
     git(['checkout', 'main'], repoDir);
+    log.audit({
+      type: 'coding',
+      model: agent.name,
+      input_summary: `#${issueNumber ?? '?'}: ${prTitle}`.slice(0, 500),
+      result: `Failed: ${err}`,
+    });
     return { success: false, error: `PR creation failed: ${err}` };
   }
 }

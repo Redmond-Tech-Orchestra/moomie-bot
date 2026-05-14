@@ -2,7 +2,9 @@ import type { Client, Message, TextChannel } from 'discord.js';
 import { ChannelType, MessageFlags } from 'discord.js';
 import { loadPrompt } from '../../prompts/load-prompt.js';
 import { ARCHIVED_CATEGORY_ID, MODEL_EXTRACT, MODEL_DEDUP, geminiUrl } from '../../config.js';
-import { logAudit } from '../admin/audit-store.js';
+import { createLogger } from '../../logger.js';
+
+const log = createLogger('Tracker');
 import {
   getActiveEvents,
   getOpenItemsForEvent,
@@ -127,7 +129,7 @@ export function registerConversationWatcher(client: Client): void {
     await handleReply(pending, message, client);
   });
 
-  console.log('[Tracker] Conversation watcher registered');
+  log.info('Conversation watcher registered');
 }
 
 // ─── Message Buffering ──────────────────────────────────────────────────────
@@ -203,7 +205,7 @@ async function onQuiet(channelId: string): Promise<void> {
   try {
     await processConversation(channelId, messages);
   } catch (err) {
-    console.error(`[Tracker] Extraction failed for channel ${channelId}:`, err);
+    log.error(`Extraction failed for channel ${channelId}:`, err);
   }
 }
 
@@ -316,7 +318,7 @@ async function processConversation(channelId: string, messages: BufferedMessage[
       timer,
     });
   } catch (err) {
-    console.error(`[Tracker] Failed to post extraction in ${channelId}:`, err);
+    log.error(`Failed to post extraction in ${channelId}:`, err);
   }
 }
 
@@ -384,8 +386,8 @@ async function callGemini(
 
     if (!res.ok) {
       const body = await res.text();
-      console.error(`[Tracker] Gemini API error ${res.status}:`, body);
-      logAudit({ type: 'extraction', channel_id: channelId, channel_name: channelName, model: MODEL_EXTRACT, input_summary: inputSummary, result: `API error ${res.status}` });
+      log.error(`Gemini API error ${res.status}:`, body);
+      log.audit({ type: 'extraction', channel_id: channelId, channel_name: channelName, model: MODEL_EXTRACT, input_summary: inputSummary, result: `API error ${res.status}` });
       return null;
     }
 
@@ -402,7 +404,7 @@ async function callGemini(
     const itemCount = parsed.items?.length ?? 0;
     const completionCount = parsed.completions?.length ?? 0;
     const nudgeCount = parsed.nudges?.length ?? 0;
-    logAudit({
+    log.audit({
       type: 'extraction',
       channel_id: channelId,
       channel_name: channelName,
@@ -416,7 +418,7 @@ async function callGemini(
 
     return parsed;
   } catch (err) {
-    console.error('[Tracker] Gemini extraction call failed:', err);
+    log.error('Gemini extraction call failed:', err);
     return null;
   }
 }
@@ -460,7 +462,7 @@ async function dedupItems(
 
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    console.warn('[Tracker] No GEMINI_API_KEY — skipping dedup, treating all as new');
+    log.warn('No GEMINI_API_KEY — skipping dedup, treating all as new');
     return newItems.map((_, i) => ({ new_index: i, verdict: 'new' as const, existing_id: null, merged_description: null }));
   }
 
@@ -476,7 +478,7 @@ async function dedupItems(
     });
 
     if (!res.ok) {
-      console.error(`[Tracker] Dedup API error ${res.status}`);
+      log.error(`Dedup API error ${res.status}`);
       return newItems.map((_, i) => ({ new_index: i, verdict: 'new' as const, existing_id: null, merged_description: null }));
     }
 
@@ -494,7 +496,7 @@ async function dedupItems(
     // Audit log the dedup call
     const dupes = parsed.results.filter(r => r.verdict === 'duplicate').length;
     const updates = parsed.results.filter(r => r.verdict === 'update').length;
-    logAudit({
+    log.audit({
       type: 'dedup',
       model: MODEL_DEDUP,
       input_summary: `${newItems.length} new vs ${existingItems.length} existing`,
@@ -506,7 +508,7 @@ async function dedupItems(
 
     return parsed.results;
   } catch (err) {
-    console.error('[Tracker] Dedup call failed:', err);
+    log.error('Dedup call failed:', err);
     return newItems.map((_, i) => ({ new_index: i, verdict: 'new' as const, existing_id: null, merged_description: null }));
   }
 }
@@ -713,7 +715,7 @@ async function confirmExtraction(pending: PendingExtraction, _client: Client): P
   pendingExtractions.delete(pending.messageId);
 
   const channelName = (_client.channels.cache.get(pending.channelId) as TextChannel | undefined)?.name;
-  logAudit({
+  log.audit({
     type: 'outcome',
     channel_id: pending.channelId,
     channel_name: channelName,
@@ -721,7 +723,7 @@ async function confirmExtraction(pending: PendingExtraction, _client: Client): P
     input_summary: `${pending.items.length} items, ${pending.completions.length} completions proposed`,
   });
 
-  console.log(`[Tracker] Extraction confirmed: ${inserted} inserted, ${skipped} skipped, ${updated} updated, ${pending.matchedCompletions.length} completions`);
+  log.info(`Extraction confirmed: ${inserted} inserted, ${skipped} skipped, ${updated} updated, ${pending.matchedCompletions.length} completions`);
 }
 
 async function dismissExtraction(pending: PendingExtraction, _client: Client): Promise<void> {
@@ -738,14 +740,14 @@ async function dismissExtraction(pending: PendingExtraction, _client: Client): P
   pendingExtractions.delete(pending.messageId);
 
   const channelName = (_client.channels.cache.get(pending.channelId) as TextChannel | undefined)?.name;
-  logAudit({
+  log.audit({
     type: 'outcome',
     channel_id: pending.channelId,
     channel_name: channelName,
     result: `dismissed: ${pending.items.length} items, ${pending.matchedCompletions.length} completions rejected`,
   });
 
-  console.log(`[Tracker] Extraction dismissed`);
+  log.info('Extraction dismissed');
 }
 
 async function handleReply(pending: PendingExtraction, reply: Message, _client: Client): Promise<void> {
@@ -796,7 +798,7 @@ async function autoResolve(messageId: string): Promise<void> {
 
   const ambiguousCount = pending.items.length - confidentItems.length;
   const channelName = (discordClient.channels.cache.get(pending.channelId) as TextChannel | undefined)?.name;
-  logAudit({
+  log.audit({
     type: 'outcome',
     channel_id: pending.channelId,
     channel_name: channelName,
@@ -804,5 +806,5 @@ async function autoResolve(messageId: string): Promise<void> {
     input_summary: `${pending.items.length} items proposed (${confidentItems.length} confident, ${ambiguousCount} ambiguous)`,
   });
 
-  console.log(`[Tracker] Auto-resolved: ${inserted} inserted, ${skipped} skipped, ${updated} updated, ${confidentItems.length - inserted - skipped - updated} dropped`);
+  log.info(`Auto-resolved: ${inserted} inserted, ${skipped} skipped, ${updated} updated, ${confidentItems.length - inserted - skipped - updated} dropped`);
 }
