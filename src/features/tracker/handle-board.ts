@@ -2,6 +2,9 @@ import type { CommandContext } from '../../types.js';
 import { loadPrompt } from '../../prompts/load-prompt.js';
 import { MODEL_CHAT, geminiUrl } from '../../config.js';
 import { getActiveEvents, getItemsForEvent, getAllOpenItems, getOrphanItems, type TrackerEvent, type TrackerItem } from './store.js';
+import { createLogger } from '../../logger.js';
+
+const log = createLogger('Board');
 
 export const name = 'board';
 export const description = 'Event-centric status board';
@@ -100,7 +103,7 @@ async function getConsolidatedBoard(events: TrackerEvent[]): Promise<string | nu
     });
 
     if (!res.ok) {
-      console.error(`[Board] Consolidation API error ${res.status}`);
+      log.error(`Consolidation API error ${res.status}`);
       return null;
     }
 
@@ -113,7 +116,7 @@ async function getConsolidatedBoard(events: TrackerEvent[]): Promise<string | nu
     const parsed = JSON.parse(text) as { sections: ConsolidatedSection[] };
     return formatConsolidatedBoard(parsed.sections, events);
   } catch (err) {
-    console.error('[Board] Consolidation failed:', err);
+    log.error('Consolidation failed:', err);
     return null;
   }
 }

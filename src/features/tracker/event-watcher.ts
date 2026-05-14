@@ -14,7 +14,9 @@ import {
 } from './store.js';
 import { PERFORMANCES_CATEGORY_ID, ARCHIVED_CATEGORY_ID, DISCORD_GUILD_ID, MODEL_DEDUP, geminiUrl } from '../../config.js';
 import { loadPrompt } from '../../prompts/load-prompt.js';
-import { logAudit } from '../admin/audit-store.js';
+import { createLogger } from '../../logger.js';
+
+const log = createLogger('Tracker');
 
 /**
  * Register a reaction listener that confirms events when ✅ is added
@@ -43,7 +45,7 @@ export function registerEventConfirmationListener(client: Client): void {
     if (!event || event.confirmed) return;
 
     confirmEvent(event.id);
-    console.log(`[Tracker] Event confirmed via reaction: ${event.name} (id=${event.id})`);
+    log.info(`Event confirmed via reaction: ${event.name} (id=${event.id})`);
 
     try {
       await (channel as TextChannel).send(
@@ -58,7 +60,7 @@ export function registerEventConfirmationListener(client: Client): void {
  */
 export async function syncEvents(client: Client): Promise<void> {
   if (!PERFORMANCES_CATEGORY_ID) {
-    console.warn('[Tracker] PERFORMANCES_CATEGORY_ID not set — skipping event sync');
+    log.warn('PERFORMANCES_CATEGORY_ID not set — skipping event sync');
     return;
   }
 
@@ -69,7 +71,7 @@ export async function syncEvents(client: Client): Promise<void> {
   const category = guild.channels.cache.get(PERFORMANCES_CATEGORY_ID)
     ?? await guild.channels.fetch(PERFORMANCES_CATEGORY_ID).catch(() => null);
   if (!category || category.type !== ChannelType.GuildCategory) {
-    console.warn('[Tracker] Performances category not found');
+    log.warn('Performances category not found');
     return;
   }
 
@@ -84,7 +86,7 @@ export async function syncEvents(client: Client): Promise<void> {
 
     const parsed = parseChannelName(channel.name);
     if (!parsed) {
-      console.log(`[Tracker] Could not parse channel name: #${channel.name}`);
+      log.info(`Could not parse channel name: #${channel.name}`);
       continue;
     }
 
@@ -125,13 +127,13 @@ export async function syncEvents(client: Client): Promise<void> {
       const ch = guild.channels.cache.get(event.channel_id);
       if (ch && ch.parentId === ARCHIVED_CATEGORY_ID) {
         archiveEvent(event.id);
-        console.log(`[Tracker] Archived event: ${event.name}`);
+        log.info(`Archived event: ${event.name}`);
       }
     }
   }
 
   if (synced > 0) {
-    console.log(`[Tracker] Synced ${synced} new event(s) from Performances category`);
+    log.info(`Synced ${synced} new event(s) from Performances category`);
   }
 }
 
@@ -150,7 +152,7 @@ export function registerChannelWatcher(client: Client): void {
 
     const parsed = parseChannelName(channel.name);
     if (!parsed) {
-      console.log(`[Tracker] New channel could not be parsed: #${channel.name}`);
+      log.info(`New channel could not be parsed: #${channel.name}`);
       return;
     }
 
@@ -178,7 +180,7 @@ export function registerChannelWatcher(client: Client): void {
 
     await askForConfirmation(channel as TextChannel, parsed, eventId);
     attributeOrphansToEvent(eventId).catch(() => {});
-    console.log(`[Tracker] New event detected: ${parsed.name} (${date})`);
+    log.info(`New event detected: ${parsed.name} (${date})`);
   });
 
   // Watch for channel moves (to Archived category) and renames
@@ -194,7 +196,7 @@ export function registerChannelWatcher(client: Client): void {
         const event = getEventByChannelId(newChannel.id);
         if (event && !event.archived) {
           archiveEvent(event.id);
-          console.log(`[Tracker] Event archived: ${event.name}`);
+          log.info(`Event archived: ${event.name}`);
         }
       }
     }
@@ -209,7 +211,7 @@ export function registerChannelWatcher(client: Client): void {
 
     const parsed = parseChannelName(newChannel.name);
     if (!parsed) {
-      console.log(`[Tracker] Renamed channel could not be parsed: #${newChannel.name}`);
+      log.info(`Renamed channel could not be parsed: #${newChannel.name}`);
       return;
     }
 
@@ -226,7 +228,7 @@ export function registerChannelWatcher(client: Client): void {
     }
 
     updateEvent(event.id, fields);
-    console.log(`[Tracker] Event updated from channel rename: #${oldName} → #${newChannel.name} (id=${event.id}, name=${parsed.name}${fields.date ? `, date=${fields.date}` : ''})`);
+    log.info(`Event updated from channel rename: #${oldName} → #${newChannel.name} (id=${event.id}, name=${parsed.name}${fields.date ? `, date=${fields.date}` : ''})`);
   });
 }
 
@@ -273,7 +275,7 @@ async function askForConfirmation(channel: TextChannel, parsed: ReturnType<typeo
     `React ✅ to confirm and I'll start tracking action items for it.`
   );
   } catch (err) {
-    console.error(`[Tracker] Could not send confirmation to #${channel.name}:`, err);
+    log.error(`Could not send confirmation to #${channel.name}:`, err);
   }
 }
 
@@ -322,7 +324,7 @@ async function attributeOrphansToEvent(eventId: number): Promise<void> {
     });
 
     if (!res.ok) {
-      console.error(`[Tracker] Orphan attribution API error ${res.status}`);
+      log.error(`Orphan attribution API error ${res.status}`);
       return;
     }
 
@@ -350,9 +352,9 @@ async function attributeOrphansToEvent(eventId: number): Promise<void> {
       .filter((a) => orphanIds.has(a.item_id))
       .map((a) => `#${a.item_id}: ${a.reason}`)
       .join('; ');
-    console.log(`[Tracker] Attributed ${validIds.length} orphan(s) to "${event.name}": ${reasons}`);
+    log.info(`Attributed ${validIds.length} orphan(s) to "${event.name}": ${reasons}`);
 
-    logAudit({
+    log.audit({
       type: 'attribution',
       channel_id: event.channel_id ?? undefined,
       channel_name: event.channel_name ?? undefined,
@@ -364,6 +366,6 @@ async function attributeOrphansToEvent(eventId: number): Promise<void> {
       tokens_out: data.usageMetadata?.candidatesTokenCount,
     });
   } catch (err) {
-    console.error('[Tracker] Orphan attribution failed:', err);
+    log.error('Orphan attribution failed:', err);
   }
 }

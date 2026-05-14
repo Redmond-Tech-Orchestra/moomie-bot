@@ -15,7 +15,9 @@ import {
   getRecentAudit,
   getAuditStats,
 } from './audit-store.js';
-import { getRecentLogs } from '../../logger.js';
+import { getRecentLogs, createLogger } from '../../logger.js';
+
+const log = createLogger('MCP');
 
 function createMcpServer(): McpServer {
   const server = new McpServer({
@@ -123,7 +125,7 @@ export function mountMcp(app: Express): void {
         mcpServer.close();
       });
     } catch (error) {
-      console.error('[MCP] Error handling request:', error);
+      log.error('Error handling request:', error);
       if (!res.headersSent) {
         res.status(500).json({
           jsonrpc: '2.0',
@@ -151,5 +153,5 @@ export function mountMcp(app: Express): void {
     });
   });
 
-  console.log('[MCP] Streamable HTTP endpoint mounted at /mcp');
+  log.info('Streamable HTTP endpoint mounted at /mcp');
 }

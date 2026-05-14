@@ -1,4 +1,7 @@
 import { getDb, registerMigration } from '../../db.js';
+import { createLogger } from '../../logger.js';
+
+const log = createLogger('Audit');
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
 
@@ -68,7 +71,7 @@ export function logAudit(entry: {
         entry.tokens_out ?? null,
       );
   } catch (err) {
-    console.error('[Audit] Failed to write audit log:', err);
+    log.error('Failed to write audit log:', err);
   }
 }
 
