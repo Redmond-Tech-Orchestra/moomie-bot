@@ -23,6 +23,7 @@ RUN npm ci --omit=dev
 
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/src/prompts ./dist/prompts
+COPY policies/ ./policies/
 
 RUN mkdir -p /app/data
 

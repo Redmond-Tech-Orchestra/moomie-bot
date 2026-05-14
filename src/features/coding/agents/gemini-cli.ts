@@ -1,8 +1,13 @@
+import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import type { CodingAgent, AgentTask, AgentResult } from './agent-types.js';
 
 const POLICY_PATH = path.resolve('policies', 'agent-sandbox.toml');
+
+// Resolve the gemini binary from node_modules rather than relying on PATH
+const require = createRequire(import.meta.url);
+const GEMINI_BIN = path.resolve(path.dirname(require.resolve('@google/gemini-cli/package.json')), 'bundle', 'gemini.js');
 
 export class GeminiAgent implements CodingAgent {
   name = 'Gemini CLI';
@@ -40,7 +45,7 @@ export class GeminiAgent implements CodingAgent {
       const args = ['--yolo', '--skip-trust', '--policy', POLICY_PATH, '-p', '-'];
       if (model) args.push('-m', model);
 
-      const child = spawn('gemini', args, {
+      const child = spawn(process.execPath, [GEMINI_BIN, ...args], {
         cwd,
         env: { ...process.env, GEMINI_CLI_TRUST_WORKSPACE: 'true' },
         stdio: ['pipe', 'pipe', 'pipe'],
