@@ -16,5 +16,6 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd /opt/moomie-bot
-            git pull origin main
+            git fetch origin main
+            git reset --hard origin/main
             docker compose up -d --build
