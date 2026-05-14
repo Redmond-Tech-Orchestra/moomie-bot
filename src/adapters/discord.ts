@@ -7,6 +7,8 @@ import { syncEvents, registerChannelWatcher, registerEventConfirmationListener }
 import { autocompleteEvent } from '../features/tracker/autocomplete.js';
 import { registerConversationWatcher } from '../features/tracker/conversation-watcher.js';
 import { handleChatMessage } from '../features/chat/handle-message.js';
+import { commentOnPR } from '../features/coding/github-client.js';
+import { GITHUB_OWNER } from '../config.js';
 import type { CommandContext } from '../types.js';
 import { createLogger } from '../logger.js';
 
@@ -170,6 +172,29 @@ export async function startDiscord(): Promise<void> {
     let content = message.content
       .replace(new RegExp(`<@!?${client.user!.id}>`, 'g'), '')
       .trim();
+
+    // PR-revision relay: if the user is replying to a Moomie message that
+    // contains a PR URL, treat the reply as feedback on that PR. We forward
+    // it to the GitHub API as a PR comment tagging @moomie-bot, which then
+    // fires the same webhook path as in-PR mentions — single source of truth.
+    if (referencedBotContent && content) {
+      const prMatch = referencedBotContent.match(
+        new RegExp(`https://github\\.com/${GITHUB_OWNER}/([\\w.-]+)/pull/(\\d+)`),
+      );
+      if (prMatch) {
+        const [, repo, prStr] = prMatch;
+        const prNumber = parseInt(prStr, 10);
+        try {
+          const userName = message.member?.displayName ?? message.author.displayName ?? message.author.username;
+          await commentOnPR(repo, prNumber, `@moomie-bot ${content}\n\n_(via Discord reply from ${userName})_`);
+          await message.react('👀');
+        } catch (err) {
+          log.error(`Failed to relay Discord reply to ${repo}/PR${prNumber}:`, err);
+          await message.reply("Couldn't forward that to the PR. Sorry. 🐄");
+        }
+        return;
+      }
+    }
 
     if (!content) {
       await message.reply('Moo! 🐄');

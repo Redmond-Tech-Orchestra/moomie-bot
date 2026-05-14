@@ -67,3 +67,66 @@ export async function isOrgMember(username: string): Promise<boolean> {
   }
 }
 
+interface PullRequestInfo {
+  number: number;
+  title: string;
+  body: string;
+  htmlUrl: string;
+  headRef: string;
+  baseRef: string;
+  authorLogin: string;
+  state: 'open' | 'closed';
+}
+
+/** Fetch metadata for a PR. Returns undefined if not found. */
+export async function getPullRequest(repo: string, prNumber: number): Promise<PullRequestInfo | undefined> {
+  const octokit = getOctokit();
+  try {
+    const { data } = await octokit.pulls.get({ owner: GITHUB_OWNER, repo, pull_number: prNumber });
+    return {
+      number: data.number,
+      title: data.title,
+      body: data.body ?? '',
+      htmlUrl: data.html_url,
+      headRef: data.head.ref,
+      baseRef: data.base.ref,
+      authorLogin: data.user?.login ?? '',
+      state: data.state as 'open' | 'closed',
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** List inline review comments associated with a specific review. */
+export async function listReviewComments(repo: string, prNumber: number, reviewId: number): Promise<{ path: string; line: number | null; body: string }[]> {
+  const octokit = getOctokit();
+  try {
+    const { data } = await octokit.pulls.listCommentsForReview({
+      owner: GITHUB_OWNER,
+      repo,
+      pull_number: prNumber,
+      review_id: reviewId,
+    });
+    return data.map((c) => ({
+      path: c.path,
+      line: c.line ?? c.original_line ?? null,
+      body: c.body ?? '',
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/** Post a comment on a PR (uses the issues API since PR comments are issue comments). */
+export async function commentOnPR(repo: string, prNumber: number, body: string): Promise<void> {
+  const octokit = getOctokit();
+  await octokit.issues.createComment({
+    owner: GITHUB_OWNER,
+    repo,
+    issue_number: prNumber,
+    body,
+  });
+}
+
+
