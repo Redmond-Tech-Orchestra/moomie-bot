@@ -12,10 +12,10 @@ denyMessage = "Destructive file operations are not allowed."
 
 [[rule]]
 toolName = "run_shell_command"
-commandRegex = "(curl|wget|Invoke-WebRequest|Invoke-RestMethod|nc\\s|ncat)"
+commandRegex = "(nc\\s|ncat|socat)"
 decision = "deny"
 priority = 900
-denyMessage = "Network access from shell commands is not allowed."
+denyMessage = "Raw socket tools are not allowed."
 
 [[rule]]
 toolName = "run_shell_command"
