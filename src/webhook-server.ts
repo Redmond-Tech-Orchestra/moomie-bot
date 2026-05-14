@@ -78,6 +78,11 @@ export function startServer(discordClient: Client): express.Express {
 
   // ─── Admin/Health Endpoints ─────────────────────────────────────────────────
 
+  // Lightweight liveness probe for Docker healthcheck — no DB queries
+  app.get('/health', (_req: Request, res: Response) => {
+    res.json({ ok: true });
+  });
+
   app.get('/status', (_req: Request, res: Response) => {
     const status = getQueueStatus();
     res.json({
