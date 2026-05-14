@@ -101,6 +101,31 @@ function persistLog(level: string, tag: string, message: string): void {
   }
 }
 
+// ─── Pruning ─────────────────────────────────────────────────────────────────
+
+const LOG_RETENTION_DAYS = 365;
+const PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000; // 1 day
+
+/** Delete log entries older than LOG_RETENTION_DAYS. */
+export function pruneLogs(): number {
+  const deleted = getDb()
+    .prepare(`DELETE FROM logs WHERE timestamp < datetime('now', ?)`)
+    .run(`-${LOG_RETENTION_DAYS} days`);
+  return deleted.changes;
+}
+
+/** Start daily log pruning. Runs once immediately, then every 24 h. */
+export function startLogPruning(): void {
+  const run = () => {
+    try {
+      const n = pruneLogs();
+      if (n > 0) console.log(`[Logger] Pruned ${n} log entries older than ${LOG_RETENTION_DAYS} days`);
+    } catch { /* startup race — ignore */ }
+  };
+  run();
+  setInterval(run, PRUNE_INTERVAL_MS).unref();
+}
+
 // ─── Factory ─────────────────────────────────────────────────────────────────
 
 /**
