@@ -125,7 +125,10 @@ async function handlePullRequest(pr: { body?: string; html_url: string }, repo?:
     if (!tracked) continue;
 
     try {
-      await notifyUser(tracked, `PR is ready for issue #${issueNumber}: ${pr.html_url}`);
+      const previewSuffix = repoName === GITHUB_REPO
+        ? `\nProposed change: https://preview.redmondtechorchestra.org`
+        : '';
+      await notifyUser(tracked, `PR is ready for issue #${issueNumber}: ${pr.html_url}${previewSuffix}`);
       untrackIssue(issueNumber, repoName);
     } catch (err) {
       log.error(`Failed to notify user for issue #${issueNumber}:`, err);
@@ -190,7 +193,10 @@ async function handleIssueLabelAdded(
       log.info(`PR created for #${issue.number}: ${result.prUrl}`);
       if (tracked) {
         try {
-          await notifyUser(tracked, `PR ready for issue #${issue.number}: ${result.prUrl}`);
+          const previewSuffix = repoName === GITHUB_REPO
+            ? `\nProposed change: https://preview.redmondtechorchestra.org`
+            : '';
+          await notifyUser(tracked, `PR ready for issue #${issue.number}: ${result.prUrl}${previewSuffix}`);
         } catch (err) {
           log.error(`Failed to notify user for PR on #${issue.number}:`, err);
         }
