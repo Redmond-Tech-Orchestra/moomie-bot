@@ -288,14 +288,20 @@ async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResu
     return { success: false, error: result.error || 'Agent reported failure.' };
   }
 
-  // 4. Check if there are actual changes
+  // 4. Clean up temp attachments so they aren't committed
+  const issueAssetsDir = path.join(repoDir, '.github', 'issue-assets');
+  if (fs.existsSync(issueAssetsDir)) {
+    fs.rmSync(issueAssetsDir, { recursive: true, force: true });
+  }
+
+  // 5. Check if there are actual changes
   const status = git(['status', '--porcelain'], repoDir);
   if (!status) {
     git(['checkout', 'main'], repoDir);
     return { success: false, error: 'Agent finished but made no changes.' };
   }
 
-  // 5. Commit and push
+  // 6. Commit and push
   try {
     git(['add', '-A'], repoDir);
     const commitMsg = issueNumber
