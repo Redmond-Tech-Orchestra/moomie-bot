@@ -12,14 +12,7 @@ COPY src/ ./src/
 RUN npm run build
 
 # --- Production stage ---
-FROM node:22-slim
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    ripgrep \
-    curl \
-    ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
+FROM mcr.microsoft.com/devcontainers/javascript-node:22
 
 # Git identity for the coding agent's commits
 RUN git config --global user.name "moomie-bot[bot]" \
