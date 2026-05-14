@@ -231,19 +231,6 @@ function handleIssueLabelRemoved(
 const BOT_AUTHOR_LOGIN = 'moomie-bot[bot]';
 const MENTION_PATTERN = /(?:^|\s)(?:@moomie-bot|\/moomie)\b/i;
 
-function getEnabledRevisionRepos(): Set<string> {
-  return new Set(
-    (process.env.PR_REVISION_REPOS || '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean),
-  );
-}
-
-function isRevisionEnabledFor(repo: string): boolean {
-  return getEnabledRevisionRepos().has(repo);
-}
-
 interface IssueCommentPayload {
   action: string;
   issue: {
@@ -272,7 +259,6 @@ async function handleIssueComment(payload: IssueCommentPayload): Promise<void> {
 
   const repo = payload.repository?.name;
   if (!repo) return;
-  if (!isRevisionEnabledFor(repo)) return;
 
   // Only act on PRs the bot opened.
   if (payload.issue.user.login !== BOT_AUTHOR_LOGIN) return;
@@ -324,7 +310,6 @@ interface PullRequestReviewPayload {
 async function handlePullRequestReview(payload: PullRequestReviewPayload): Promise<void> {
   const repo = payload.repository?.name;
   if (!repo) return;
-  if (!isRevisionEnabledFor(repo)) return;
 
   // Only act on PRs the bot opened.
   if (payload.pull_request.user.login !== BOT_AUTHOR_LOGIN) return;
