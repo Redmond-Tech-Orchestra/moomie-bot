@@ -40,6 +40,20 @@ decision = "deny"
 priority = 900
 denyMessage = "Access to node_modules and .git internals is not allowed."
 
+[[rule]]
+toolName = ["read_file", "write_file", "replace"]
+argsPattern = "/app/(data|uploads)/"
+decision = "deny"
+priority = 900
+denyMessage = "Direct access to data and uploads volumes is not allowed. Use MCP tools instead."
+
+[[rule]]
+toolName = "run_shell_command"
+commandRegex = "/app/(data|uploads)/"
+decision = "deny"
+priority = 900
+denyMessage = "Shell access to data and uploads volumes is not allowed. Use MCP tools instead."
+
 # ─── Block writes outside the working directory ───────────────────────────────
 
 [[rule]]

@@ -3,6 +3,7 @@ import { startDiscord, client } from './adapters/discord.js';
 import { startServer } from './webhook-server.js';
 import { warmupRepo, forceResetQueue } from './features/coding/job-runner.js';
 import { getDb } from './db.js';
+import { startLogPruning } from './logger.js';
 
 // ─── Validate required env vars (secrets only — non-secrets have defaults in config.ts) ──
 const required = ['DISCORD_TOKEN', 'GITHUB_APP_PRIVATE_KEY_PATH'];
@@ -20,6 +21,7 @@ if (!process.env.GITHUB_WEBHOOK_SECRET) {
 await startDiscord();
 startServer(client);
 warmupRepo();
+startLogPruning();
 
 console.log('Moomie bot is running.');
 
