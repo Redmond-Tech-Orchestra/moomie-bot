@@ -11,6 +11,7 @@ services:
       - DB_PATH=/app/data/moomie.db
     volumes:
       - bot-data:/app/data
+      - bot-uploads:/app/uploads
       - ./moomie-bot.2026-05-03.private-key.pem:/app/moomie-bot.2026-05-03.private-key.pem:ro
 
   bot-dev:
@@ -27,9 +28,11 @@ services:
     volumes:
       - ./src:/app/src
       - bot-data:/app/data
+      - bot-uploads:/app/uploads
     command: npx tsx --watch src/index.ts
     profiles:
       - dev
 
 volumes:
   bot-data:
+  bot-uploads:
