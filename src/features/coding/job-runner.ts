@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getOctokit, getInstallationToken } from './github-client.js';
+import { getOctokit, getInstallationToken, getPullRequest, commentOnPR } from './github-client.js';
 import { getAgent } from './agents/index.js';
 import type { AgentResult } from './agents/index.js';
 import { copyToWorkspace, deleteUploads } from '../website/attachment-store.js';
@@ -25,18 +25,42 @@ interface OrchestratorResult {
 
 // ─── Job Queue ────────────────────────────────────────────────────────────────
 
-interface QueuedJob {
+interface NewTaskJob {
+  kind: 'new';
   options: CodingTaskOptions;
   resolve: (result: OrchestratorResult) => void;
   reject: (err: Error) => void;
   enqueuedAt: number;
 }
 
+interface RevisionTaskJob {
+  kind: 'revision';
+  options: RevisionTaskOptions;
+  resolve: (result: OrchestratorResult) => void;
+  reject: (err: Error) => void;
+  enqueuedAt: number;
+}
+
+type QueuedJob = NewTaskJob | RevisionTaskJob;
+
 const queue: QueuedJob[] = [];
 let running = false;
 let currentJobStart: number | null = null;
 let warmupDone = false;
 let warmupPromise: Promise<void> | null = null;
+
+function jobLabel(job: QueuedJob): string {
+  if (job.kind === 'new') return `new#${job.options.issueNumber || '?'}`;
+  return `rev#${job.options.repo}/PR${job.options.prNumber}`;
+}
+
+function jobAttachments(job: QueuedJob): string[] | undefined {
+  return job.kind === 'new' ? job.options.attachments : undefined;
+}
+
+function jobRepo(job: QueuedJob): string {
+  return job.kind === 'new' ? (job.options.repo || GITHUB_REPO) : job.options.repo;
+}
 
 async function processQueue(): Promise<void> {
   if (running || queue.length === 0) return;
@@ -46,9 +70,10 @@ async function processQueue(): Promise<void> {
   // Discard stale jobs that have been waiting too long
   while (queue.length > 0 && Date.now() - queue[0].enqueuedAt > JOB_MAX_AGE_MS) {
     const stale = queue.shift()!;
-    log.warn(`Discarding stale job #${stale.options.issueNumber || '?'} (queued ${Math.round((Date.now() - stale.enqueuedAt) / 60000)}min ago)`);
+    log.warn(`Discarding stale job ${jobLabel(stale)} (queued ${Math.round((Date.now() - stale.enqueuedAt) / 60000)}min ago)`);
     stale.resolve({ success: false, error: 'Job expired — it waited too long in the queue.' });
-    if (stale.options.attachments?.length) deleteUploads(stale.options.attachments);
+    const atts = jobAttachments(stale);
+    if (atts?.length) deleteUploads(atts);
   }
 
   if (queue.length === 0) return;
@@ -62,26 +87,28 @@ async function processQueue(): Promise<void> {
   const timeoutPromise = new Promise<OrchestratorResult>((resolve) => {
     setTimeout(() => {
       timedOut = true;
-      log.error(`Job #${job.options.issueNumber || '?'} timed out after ${JOB_TIMEOUT_MS / 60000}min`);
+      log.error(`Job ${jobLabel(job)} timed out after ${JOB_TIMEOUT_MS / 60000}min`);
       resolve({ success: false, error: 'Job timed out and was force-cleared.' });
     }, JOB_TIMEOUT_MS);
   });
 
   try {
-    const result = await Promise.race([executeTask(job.options), timeoutPromise]);
+    const work = job.kind === 'new'
+      ? executeTask(job.options)
+      : executeRevision(job.options);
+    const result = await Promise.race([work, timeoutPromise]);
     job.resolve(result);
   } catch (err) {
     job.reject(err instanceof Error ? err : new Error(String(err)));
   } finally {
-    if (job.options.attachments?.length) {
-      deleteUploads(job.options.attachments);
-    }
+    const atts = jobAttachments(job);
+    if (atts?.length) deleteUploads(atts);
     running = false;
     currentJobStart = null;
     // If timed out, reset the workspace to prevent stale state for next job
     if (timedOut) {
       try {
-        const repoDir = getRepoDir(job.options.repo);
+        const repoDir = getRepoDir(jobRepo(job));
         git(['checkout', 'main'], repoDir);
         git(['reset', '--hard', 'origin/main'], repoDir);
       } catch { /* best effort */ }
@@ -207,7 +234,8 @@ export function forceResetQueue(): { drained: number } {
   const drained = queue.length;
   for (const job of queue) {
     job.resolve({ success: false, error: 'Queue was force-reset by admin.' });
-    if (job.options.attachments?.length) deleteUploads(job.options.attachments);
+    const atts = jobAttachments(job);
+    if (atts?.length) deleteUploads(atts);
   }
   queue.length = 0;
   running = false;
@@ -224,10 +252,39 @@ export function runCodingTask(options: CodingTaskOptions): Promise<OrchestratorR
     });
   }
 
-  log.info(`Queued job #${options.issueNumber || '?'} (${queue.length + 1} in queue, ${running ? 'one running' : 'idle'})`);
+  log.info(`Queued new#${options.issueNumber || '?'} (${queue.length + 1} in queue, ${running ? 'one running' : 'idle'})`);
 
   return new Promise((resolve, reject) => {
-    queue.push({ options, resolve, reject, enqueuedAt: Date.now() });
+    queue.push({ kind: 'new', options, resolve, reject, enqueuedAt: Date.now() });
+    processQueue();
+  });
+}
+
+export interface RevisionTaskOptions {
+  repo: string;
+  prNumber: number;
+  feedback: string;
+  requestedBy: string;
+}
+
+/**
+ * Enqueue a revision job that re-checks-out an existing PR branch and applies
+ * additional changes from user feedback. Result-comment posting is the caller's
+ * responsibility — `executeRevision` only handles git/agent and posts a status
+ * comment on the PR itself.
+ */
+export function runRevisionTask(options: RevisionTaskOptions): Promise<OrchestratorResult> {
+  if (queue.length >= MAX_QUEUE_SIZE) {
+    return Promise.resolve({
+      success: false,
+      error: `Queue is full (${MAX_QUEUE_SIZE} jobs waiting). Try again later.`,
+    });
+  }
+
+  log.info(`Queued rev#${options.repo}/PR${options.prNumber} (${queue.length + 1} in queue, ${running ? 'one running' : 'idle'})`);
+
+  return new Promise((resolve, reject) => {
+    queue.push({ kind: 'revision', options, resolve, reject, enqueuedAt: Date.now() });
     processQueue();
   });
 }
@@ -376,3 +433,118 @@ async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResu
     return { success: false, error: `PR creation failed: ${err}` };
   }
 }
+
+// ─── Revision Execution ──────────────────────────────────────────────────────
+
+/**
+ * Apply user feedback to an existing PR. Checks out the PR's head branch,
+ * runs the agent, force-pushes, and posts a status comment on the PR.
+ */
+async function executeRevision(options: RevisionTaskOptions): Promise<OrchestratorResult> {
+  const { repo, prNumber, feedback, requestedBy } = options;
+  const agent = getAgent();
+
+  log.info(`Revising ${repo}/PR${prNumber} via ${agent.name} (requested by ${requestedBy})`);
+
+  // 1. Fetch PR metadata + verify it's a moomie PR on an open branch
+  const pr = await getPullRequest(repo, prNumber);
+  if (!pr) return { success: false, error: `PR #${prNumber} not found.` };
+  if (pr.state !== 'open') return { success: false, error: `PR #${prNumber} is ${pr.state}.` };
+
+  // 2. Ensure repo is local
+  let repoDir: string;
+  try {
+    repoDir = await cloneOrPull(repo);
+  } catch (err) {
+    return { success: false, error: `Failed to set up repo: ${err}` };
+  }
+
+  // 3. Check out the PR head branch (force-sync to remote)
+  const branchName = pr.headRef;
+  try {
+    git(['fetch', 'origin', branchName], repoDir);
+    git(['checkout', '-B', branchName, `origin/${branchName}`], repoDir);
+  } catch (err) {
+    git(['checkout', 'main'], repoDir);
+    return { success: false, error: `Failed to checkout ${branchName}: ${err}` };
+  }
+
+  // 4. Build the revision prompt — give the agent context on what's already
+  //    been done plus what the user wants changed.
+  const prompt = [
+    `You previously opened PR #${prNumber} titled "${pr.title}" with this description:`,
+    '---',
+    pr.body || '(no body)',
+    '---',
+    '',
+    `A user has now reviewed the PR and is requesting follow-up changes:`,
+    '',
+    feedback,
+    '',
+    `Apply these changes to the existing branch. Only make changes related to the user's feedback — do not undo or rework anything from the original PR unless explicitly asked.`,
+  ].join('\n');
+
+  // 5. Run the agent
+  let result: AgentResult;
+  try {
+    result = await agent.execute({ prompt }, repoDir);
+  } catch (err) {
+    git(['checkout', 'main'], repoDir);
+    return { success: false, error: `Agent failed: ${err}` };
+  }
+
+  if (!result.success) {
+    git(['checkout', 'main'], repoDir);
+    await safeComment(repo, prNumber, `Couldn't apply revision: ${result.error || 'agent reported failure'}.`);
+    return { success: false, error: result.error || 'Agent reported failure.' };
+  }
+
+  // 6. Anything to commit?
+  const status = git(['status', '--porcelain'], repoDir);
+  if (!status) {
+    git(['checkout', 'main'], repoDir);
+    await safeComment(repo, prNumber, `Took a look but didn't end up changing anything.\n\n${result.summary || ''}`.trim());
+    return { success: false, error: 'Agent finished but made no changes.' };
+  }
+
+  // 7. Commit + push
+  let newSha: string;
+  try {
+    git(['add', '-A'], repoDir);
+    const commitMsg = `Revision: ${feedback.split('\n')[0].slice(0, 80)}\n\nRequested by ${requestedBy}`;
+    git(['commit', '-F', '-'], repoDir, commitMsg);
+    const pushToken = await getInstallationToken();
+    setGitToken(repoDir, pushToken, repo);
+    git(['push', 'origin', branchName], repoDir);
+    newSha = git(['rev-parse', '--short', 'HEAD'], repoDir);
+  } catch (err) {
+    git(['checkout', 'main'], repoDir);
+    return { success: false, error: `Failed to push: ${err}` };
+  } finally {
+    git(['checkout', 'main'], repoDir);
+  }
+
+  await safeComment(repo, prNumber, [
+    `Pushed \`${newSha}\` with the requested changes.`,
+    '',
+    result.summary,
+  ].join('\n'));
+
+  log.audit({
+    type: 'coding',
+    model: agent.name,
+    input_summary: `revision ${repo}/PR${prNumber}: ${feedback.slice(0, 200)}`,
+    result: `Pushed ${newSha}`,
+  });
+
+  return { success: true, prUrl: pr.htmlUrl, summary: result.summary };
+}
+
+async function safeComment(repo: string, prNumber: number, body: string): Promise<void> {
+  try {
+    await commentOnPR(repo, prNumber, body);
+  } catch (err) {
+    log.warn(`Failed to post status comment on ${repo}/PR${prNumber}:`, err);
+  }
+}
+

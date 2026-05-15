@@ -3,8 +3,8 @@ import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import type { Client } from 'discord.js';
 import { getTrackedIssue, untrackIssue } from './features/coding/issue-tracker.js';
-import { isOrgMember } from './features/coding/github-client.js';
-import { runCodingTask, getQueueStatus } from './features/coding/job-runner.js';
+import { isOrgMember, listReviewComments } from './features/coding/github-client.js';
+import { runCodingTask, runRevisionTask, getQueueStatus } from './features/coding/job-runner.js';
 import { startTeams } from './adapters/teams.js';
 import { getUploadsDir } from './features/website/attachment-store.js';
 import { initNotifications, notifyUser } from './adapters/index.js';
@@ -71,6 +71,14 @@ export function startServer(discordClient: Client): express.Express {
 
     if (event === 'pull_request' && payload.action === 'opened') {
       await handlePullRequest(payload.pull_request, payload.repository?.name);
+    }
+
+    if (event === 'issue_comment' && payload.action === 'created') {
+      await handleIssueComment(payload);
+    }
+
+    if (event === 'pull_request_review' && payload.action === 'submitted') {
+      await handlePullRequestReview(payload);
     }
 
     res.sendStatus(200);
@@ -222,4 +230,127 @@ function handleIssueLabelRemoved(
   if (payload.label.name !== TRIGGER_LABEL) return;
   log.info(`Label "${TRIGGER_LABEL}" removed from #${payload.issue.number}`);
   // Future: could cancel in-progress agent work here
+}
+
+// ─── PR Revisions ────────────────────────────────────────────────────────────
+
+const BOT_AUTHOR_LOGIN = 'moomie-bot[bot]';
+const MENTION_PATTERN = /(?:^|\s)(?:@moomie-bot|\/moomie)\b/i;
+
+interface IssueCommentPayload {
+  action: string;
+  issue: {
+    number: number;
+    pull_request?: unknown;
+    user: { login: string };
+  };
+  comment: {
+    body: string;
+    user: { login: string; type?: string };
+    html_url: string;
+  };
+  repository?: { name: string };
+}
+
+/**
+ * Handle a comment on a PR. Triggers a revision if:
+ *  - the comment is on a PR (not a regular issue)
+ *  - the PR was authored by moomie-bot
+ *  - the comment body contains @moomie-bot or /moomie
+ *  - the commenter is an org member or a GitHub App bot (covers Discord-relayed comments)
+ */
+async function handleIssueComment(payload: IssueCommentPayload): Promise<void> {
+  // Only PR comments — `issue_comment` fires for both issues and PRs.
+  if (!payload.issue.pull_request) return;
+
+  const repo = payload.repository?.name;
+  if (!repo) return;
+
+  // Only act on PRs the bot opened.
+  if (payload.issue.user.login !== BOT_AUTHOR_LOGIN) return;
+
+  const body = payload.comment.body || '';
+  if (!MENTION_PATTERN.test(body)) return;
+
+  // Permission check: org member, or our own bot account (Discord relay path).
+  const sender = payload.comment.user;
+  const isBotApp = sender.type === 'Bot';
+  if (!isBotApp && !await isOrgMember(sender.login)) {
+    log.info(`Ignoring PR comment from non-org-member: ${sender.login}`);
+    return;
+  }
+
+  // Strip the trigger token to get the real instruction.
+  const feedback = body.replace(MENTION_PATTERN, '').trim();
+  if (!feedback) return;
+
+  log.info(`Revising ${repo}/PR${payload.issue.number} from comment by ${sender.login}`);
+  void runRevisionTask({
+    repo,
+    prNumber: payload.issue.number,
+    feedback,
+    requestedBy: sender.login,
+  });
+}
+
+interface PullRequestReviewPayload {
+  action: string;
+  review: {
+    id: number;
+    body: string | null;
+    state: string;
+    user: { login: string; type?: string };
+    html_url: string;
+  };
+  pull_request: {
+    number: number;
+    user: { login: string };
+  };
+  repository?: { name: string };
+}
+
+/**
+ * Handle a submitted PR review. Triggers a revision when a reviewer requests
+ * changes (or just leaves comments) on a moomie-authored PR.
+ */
+async function handlePullRequestReview(payload: PullRequestReviewPayload): Promise<void> {
+  const repo = payload.repository?.name;
+  if (!repo) return;
+
+  // Only act on PRs the bot opened.
+  if (payload.pull_request.user.login !== BOT_AUTHOR_LOGIN) return;
+
+  // Approve reviews need no work.
+  if (payload.review.state !== 'changes_requested' && payload.review.state !== 'commented') return;
+
+  const sender = payload.review.user;
+  const isBotApp = sender.type === 'Bot';
+  if (sender.login === BOT_AUTHOR_LOGIN) return; // self-loop guard
+  if (!isBotApp && !await isOrgMember(sender.login)) {
+    log.info(`Ignoring review from non-org-member: ${sender.login}`);
+    return;
+  }
+
+  const reviewBody = (payload.review.body || '').trim();
+  const inline = await listReviewComments(repo, payload.pull_request.number, payload.review.id);
+
+  // No actionable content? Skip — happens when a user clicks "Approve" with no body
+  // or submits a "Comment" review with nothing in it.
+  if (!reviewBody && inline.length === 0) return;
+
+  const feedbackParts: string[] = [];
+  if (reviewBody) feedbackParts.push(reviewBody);
+  for (const c of inline) {
+    const loc = c.line ? `${c.path}:${c.line}` : c.path;
+    feedbackParts.push(`(${loc}) ${c.body}`);
+  }
+  const feedback = feedbackParts.join('\n\n');
+
+  log.info(`Revising ${repo}/PR${payload.pull_request.number} from review by ${sender.login} (${inline.length} inline comments)`);
+  void runRevisionTask({
+    repo,
+    prNumber: payload.pull_request.number,
+    feedback,
+    requestedBy: sender.login,
+  });
 }
