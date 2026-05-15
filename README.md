@@ -2,6 +2,10 @@
 
 Discord + Teams bot for the Redmond Tech Orchestra. Manages project tracking, automates website maintenance using AI agents, generates activity digests, and handles reminders.
 
+For how this bot fits into the broader orchestra infrastructure (server, nginx,
+backups, deploy flows, request diagrams), see the
+[infra repo](https://github.com/Redmond-Tech-Orchestra/infra).
+
 ## Commands
 
 | Command | Description |
@@ -76,7 +80,7 @@ Bot pings user back on the SAME platform they initiated from
 ## Local Development
 
 ```bash
-cp .env.example .env   # Fill in values (see Environment Variables below)
+cp .env.example .env   # Each var documents where its value comes from
 npm install
 npm run deploy-commands   # Register slash commands with Discord (once)
 npm run dev               # Starts bot with hot reload (tsx --watch)
@@ -107,43 +111,16 @@ npm run deploy-commands # Registers slash commands with Discord (run after addin
 
 The deploy script (`deploy.ps1`) SCPs project files to the production server and runs `docker compose up -d --build`.
 
-## Environment Variables
+Production lives at `/opt/moomie-bot` on `schemes.me`. The nginx vhost,
+TLS, daily backup cron, and broader server config are tracked in the
+[infra repo](https://github.com/Redmond-Tech-Orchestra/infra).
 
-### Required
+## Environment variables
 
-| Variable | Description |
-|----------|-------------|
-| `DISCORD_TOKEN` | Bot token from Discord Developer Portal |
-| `DISCORD_CLIENT_ID` | Application ID for registering slash commands |
-| `GITHUB_OWNER` | GitHub org/user (e.g., `Redmond-Tech-Orchestra`) |
-| `GITHUB_REPO` | Target repo for website issues and PRs |
-
-### GitHub Authentication (pick one)
-
-**GitHub App (recommended for production):**
-
-| Variable | Description |
-|----------|-------------|
-| `GITHUB_APP_ID` | GitHub App ID |
-| `GITHUB_APP_PRIVATE_KEY_PATH` | Path to `.pem` private key |
-| `GITHUB_APP_INSTALLATION_ID` | Installation ID for the org |
-
-### Optional
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `GITHUB_WEBHOOK_SECRET` | — | Secret for webhook signature verification |
-| `PORT` | `3000` | HTTP server port |
-| `DB_PATH` | `./data/moomie.db` | SQLite database path |
-| `BOT_OWNER_ID` | — | Discord user ID with admin permissions |
-| `MUSIC_ADMIN_ROLE` | `Librarian` | Discord role allowed to set music link |
-| `DISCORD_GUILD_ID` | — | Scope commands to a guild (instant, for testing) |
-| `CODING_AGENT` | `gemini` | Agent backend: `gemini` \| `claude` \| `codex` |
-| `GEMINI_API_KEY` | — | Google AI API key (for extraction, digest, board consolidation) |
-| `GEMINI_MODEL` | — | Override Gemini model (leave unset for default) |
-| `AGENT_WORKSPACE` | `./workspace` | Directory for cloned repos |
-| `TEAMS_APP_ID` | — | Microsoft Bot Framework app ID |
-| `TEAMS_APP_PASSWORD` | — | Microsoft Bot Framework password |
+The canonical list — with "where to get this value" notes for every secret —
+is [`.env.example`](.env.example). Non-secret defaults (Discord IDs, GitHub
+repo names, port, etc.) live in [`src/config.ts`](src/config.ts) and only need
+to be set in `.env` if you want to override them for local dev.
 
 ## Webhook Setup
 
@@ -255,3 +232,16 @@ docker cp moomie-bot:/app/data/moomie.db ./backup.db
 ```
 
 Tables auto-create via the migration system in `src/db.ts`. Delete the DB file to reset.
+
+## Backups
+
+Production runs [`backup.sh`](backup.sh) daily at 11:00 UTC via cron (the
+entry is tracked in [`infra/cron/peter`](https://github.com/Redmond-Tech-Orchestra/infra/blob/main/cron/peter)).
+Retention is tiered:
+
+- **Daily** — last 7 days
+- **Weekly** — last 5 weeks
+- **Monthly** — last 12 months
+
+Backups land in `/opt/moomie-bot/backups/`. To restore, stop the container,
+copy the chosen `.db` file over `data/moomie.db`, and start the container.
