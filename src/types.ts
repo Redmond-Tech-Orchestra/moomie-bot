@@ -28,11 +28,16 @@ export interface CommandContext {
   conversationRef?: string;
   // Permissions
   hasRole?: (roleNameOrId: string) => boolean;
-  reply: (text: string) => Promise<void>;
+  reply: (text: string, components?: unknown[]) => Promise<void>;
   deferReply: () => Promise<void>;
-  editReply: (text: string) => Promise<void>;
-  /** Send an additional message after the initial reply (used for chunked output that exceeds platform message limits). */
-  followUp: (text: string) => Promise<void>;
+  editReply: (text: string, components?: unknown[]) => Promise<void>;
+  /**
+   * Send an additional message after the initial reply (used for chunked
+   * output that exceeds platform message limits). Optionally carries
+   * interactive UI components (buttons, select menus, etc); platforms that
+   * don't support components should fall back to text only.
+   */
+  followUp: (text: string, components?: unknown[]) => Promise<void>;
 }
 
 // Platform-agnostic command handler

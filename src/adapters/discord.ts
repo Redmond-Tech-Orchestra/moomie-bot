@@ -6,6 +6,7 @@ import { initScheduler } from '../features/remind/scheduler.js';
 import { syncEvents, registerChannelWatcher, registerEventConfirmationListener } from '../features/tracker/event-watcher.js';
 import { autocompleteEvent } from '../features/tracker/autocomplete.js';
 import { registerConversationWatcher } from '../features/tracker/conversation-watcher.js';
+import { isBoardSelect, handleBoardSelect } from '../features/tracker/board-interactions.js';
 import { handleChatMessage } from '../features/chat/handle-message.js';
 import { commentOnPR } from '../features/coding/github-client.js';
 import { GITHUB_OWNER } from '../config.js';
@@ -62,22 +63,23 @@ function buildContext(interaction: ChatInputCommandInteraction, overrides?: { ta
       if (Array.isArray(roles)) return roles.includes(roleNameOrId);
       return roles.cache.some((r) => r.name === roleNameOrId || r.id === roleNameOrId);
     },
-    reply: async (text: string) => {
-      await interaction.reply(text);
+    reply: async (text: string, components?: unknown[]) => {
+      await interaction.reply({ content: text, components: (components ?? []) as never });
     },
     deferReply: async () => {
       deferred = true;
       await interaction.deferReply();
     },
-    editReply: async (text: string) => {
+    editReply: async (text: string, components?: unknown[]) => {
+      const payload = { content: text, components: (components ?? []) as never };
       if (deferred) {
-        await interaction.editReply(text);
+        await interaction.editReply(payload);
       } else {
-        await interaction.reply(text);
+        await interaction.reply(payload);
       }
     },
-    followUp: async (text: string) => {
-      await interaction.followUp(text);
+    followUp: async (text: string, components?: unknown[]) => {
+      await interaction.followUp({ content: text, components: (components ?? []) as never });
     },
   };
 }
@@ -101,6 +103,21 @@ export async function startDiscord(): Promise<void> {
       const focused = interaction.options.getFocused(true);
       if (focused.name === 'event') {
         await autocompleteEvent(interaction);
+      }
+      return;
+    }
+
+    // Route component interactions (select menus, buttons) to their owners.
+    if (interaction.isStringSelectMenu()) {
+      if (isBoardSelect(interaction.customId)) {
+        try {
+          await handleBoardSelect(interaction);
+        } catch (err) {
+          log.error('Board select handler failed:', err);
+          if (!interaction.replied) {
+            await interaction.reply({ content: 'Something went wrong applying that change.', ephemeral: true });
+          }
+        }
       }
       return;
     }
