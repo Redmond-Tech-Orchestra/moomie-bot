@@ -31,6 +31,8 @@ export interface CommandContext {
   reply: (text: string) => Promise<void>;
   deferReply: () => Promise<void>;
   editReply: (text: string) => Promise<void>;
+  /** Send an additional message after the initial reply (used for chunked output that exceeds platform message limits). */
+  followUp: (text: string) => Promise<void>;
 }
 
 // Platform-agnostic command handler

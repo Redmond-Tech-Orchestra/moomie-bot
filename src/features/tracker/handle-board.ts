@@ -21,7 +21,7 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
   if (!isNaN(eventId)) {
     // Special case: 0 = org-wide items
     if (eventId === 0) {
-      await ctx.reply(formatOrgBoard());
+      await sendChunked(ctx, formatOrgBoard(), { defer: false });
       return;
     }
     const event = events.find((e) => e.id === eventId);
@@ -29,8 +29,7 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
       await ctx.reply('Event not found.');
       return;
     }
-    const output = formatEventBoard(event);
-    await ctx.reply(output);
+    await sendChunked(ctx, formatEventBoard(event), { defer: false });
     return;
   }
 
@@ -38,12 +37,65 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
   await ctx.deferReply();
 
   const consolidated = await getConsolidatedBoard(events);
-  if (consolidated) {
-    await ctx.editReply(consolidated);
+  const text = consolidated ?? formatFallbackOverview(events);
+  await sendChunked(ctx, text, { defer: true });
+}
+
+// ─── Chunking ──────────────────────────────────────────────────────────────
+
+/**
+ * Discord caps a single message at 2000 chars. Split on blank-line section
+ * boundaries when possible, falling back to line boundaries; never break in
+ * the middle of a line. Sends the first chunk via reply/editReply and any
+ * remaining chunks via followUp.
+ */
+async function sendChunked(ctx: CommandContext, text: string, opts: { defer: boolean }): Promise<void> {
+  const MAX = 1900; // leave headroom under Discord's 2000-char limit
+  const chunks = chunkText(text, MAX);
+  const first = chunks[0] ?? '(empty)';
+
+  if (opts.defer) {
+    await ctx.editReply(first);
   } else {
-    // Fallback to non-consolidated view
-    await ctx.editReply(formatFallbackOverview(events));
+    await ctx.reply(first);
   }
+  for (let i = 1; i < chunks.length; i++) {
+    await ctx.followUp(chunks[i]);
+  }
+}
+
+function chunkText(text: string, max: number): string[] {
+  if (text.length <= max) return [text];
+  const chunks: string[] = [];
+  // Prefer splitting on blank-line section boundaries
+  const sections = text.split(/\n\n+/);
+  let current = '';
+  const flush = () => {
+    if (current.length > 0) { chunks.push(current); current = ''; }
+  };
+  for (const section of sections) {
+    const candidate = current ? `${current}\n\n${section}` : section;
+    if (candidate.length <= max) {
+      current = candidate;
+      continue;
+    }
+    flush();
+    if (section.length <= max) {
+      current = section;
+    } else {
+      // Section itself exceeds max — split by lines, then hard-wrap if a line is still too long
+      for (const line of section.split('\n')) {
+        const next = current ? `${current}\n${line}` : line;
+        if (next.length <= max) { current = next; continue; }
+        flush();
+        if (line.length <= max) { current = line; continue; }
+        // Pathologically long single line — hard split
+        for (let i = 0; i < line.length; i += max) chunks.push(line.slice(i, i + max));
+      }
+    }
+  }
+  flush();
+  return chunks;
 }
 
 // ─── LLM Consolidation ─────────────────────────────────────────────────────

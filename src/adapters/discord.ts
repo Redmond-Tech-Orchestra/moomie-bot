@@ -76,6 +76,9 @@ function buildContext(interaction: ChatInputCommandInteraction, overrides?: { ta
         await interaction.reply(text);
       }
     },
+    followUp: async (text: string) => {
+      await interaction.followUp(text);
+    },
   };
 }
 

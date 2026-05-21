@@ -73,6 +73,9 @@ function buildContext(turnContext: TurnContext, overrides?: { targetUserId?: str
     editReply: async (text: string) => {
       await turnContext.sendActivity(text);
     },
+    followUp: async (text: string) => {
+      await turnContext.sendActivity(text);
+    },
   };
 }
 
