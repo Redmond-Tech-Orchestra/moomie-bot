@@ -2,6 +2,7 @@ import type { CommandContext } from '../../types.js';
 import { loadPrompt } from '../../prompts/load-prompt.js';
 import { MODEL_CHAT, geminiUrl } from '../../config.js';
 import { getActiveEvents, getItemsForEvent, getAllOpenItems, getOrphanItems, type TrackerEvent, type TrackerItem } from './store.js';
+import { buildBoardActionRows } from './board-interactions.js';
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('Board');
@@ -21,7 +22,9 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
   if (!isNaN(eventId)) {
     // Special case: 0 = org-wide items
     if (eventId === 0) {
-      await sendChunked(ctx, formatOrgBoard(), { defer: false });
+      const items = getOrphanItems();
+      const { components, footer } = buildActionRow(items);
+      await sendChunked(ctx, formatOrgBoard() + footer, { defer: false, components });
       return;
     }
     const event = events.find((e) => e.id === eventId);
@@ -29,7 +32,9 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
       await ctx.reply('Event not found.');
       return;
     }
-    await sendChunked(ctx, formatEventBoard(event), { defer: false });
+    const items = getItemsForEvent(event.id).filter((i) => i.status !== 'done');
+    const { components, footer } = buildActionRow(items);
+    await sendChunked(ctx, formatEventBoard(event) + footer, { defer: false, components });
     return;
   }
 
@@ -37,8 +42,127 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
   await ctx.deferReply();
 
   const consolidated = await getConsolidatedBoard(events);
-  const text = consolidated ?? formatFallbackOverview(events);
-  await sendChunked(ctx, text, { defer: true });
+
+  // Fallback path: LLM unavailable. Single message + flat dropdown.
+  if (!consolidated) {
+    const allOpen = [...getAllOpenItems(), ...getOrphanItems().filter((o) => o.status !== 'done')];
+    const seen = new Set<number>();
+    const unique = allOpen.filter((i) => (seen.has(i.id) ? false : (seen.add(i.id), true)));
+    const { components, footer } = buildActionRow(unique);
+    await sendChunked(ctx, formatFallbackOverview(events) + footer, { defer: true, components });
+    return;
+  }
+
+  // Consolidated path: one message per section, each with its own dropdown.
+  const allOpen = [...getAllOpenItems(), ...getOrphanItems().filter((o) => o.status !== 'done')];
+  const openSeen = new Set<number>();
+  const allOpenUnique = allOpen.filter((i) => (openSeen.has(i.id) ? false : (openSeen.add(i.id), true)));
+  const openById = new Map(allOpenUnique.map((i) => [i.id, i]));
+  const groups = buildGroupsMap(consolidated, allOpenUnique);
+
+  // Map primary id → LLM's consolidated description / owner so the dropdown
+  // label matches the board text (rather than the raw #primary item text).
+  const overrides = new Map<number, { description: string; owner: string | null }>();
+  for (const section of consolidated) {
+    for (const ci of section.items) {
+      const ids = ci.source_ids.filter((id) => openById.has(id));
+      if (ids.length === 0) continue;
+      overrides.set(ids[0], { description: ci.description, owner: ci.owner });
+    }
+  }
+
+  let isFirst = true;
+  for (const section of consolidated) {
+    // Resolve this section's primary items (one per LLM-merged group, ordered by id ASC).
+    const sectionPrimaries: TrackerItem[] = [];
+    const seenPrimaries = new Set<number>();
+    for (const ci of section.items) {
+      const ids = ci.source_ids.filter((id) => openById.has(id));
+      if (ids.length === 0) continue;
+      const primary = ids[0];
+      if (seenPrimaries.has(primary)) continue;
+      seenPrimaries.add(primary);
+      sectionPrimaries.push(openById.get(primary)!);
+    }
+    if (sectionPrimaries.length === 0) continue; // skip empty sections
+
+    sectionPrimaries.sort((a, b) => a.id - b.id);
+
+    const sectionText = formatConsolidatedSection(section, events);
+    const { components, footer } = buildActionRow(sectionPrimaries, groups, overrides);
+    const header = isFirst ? '📋 **MOO Action Board**\n\n' : '';
+    const body = header + sectionText + footer;
+
+    if (isFirst) {
+      await sendChunked(ctx, body, { defer: true, components });
+      isFirst = false;
+    } else {
+      await sendChunked(ctx, body, { defer: false, components, useFollowUp: true });
+    }
+  }
+
+  if (isFirst) {
+    // Edge case: every section was empty (shouldn't happen if we got here, but be safe).
+    await ctx.editReply('No open items.');
+  }
+}
+
+/**
+ * From the LLM's consolidated sections, build a Map<primaryId, allSourceIds>.
+ * The "primary" is the first id in source_ids; non-primary members will be
+ * hidden from the dropdown (closing the primary closes them all). Only ids
+ * that correspond to open items are included.
+ */
+function buildGroupsMap(sections: ConsolidatedSection[], openItems: TrackerItem[]): Map<number, number[]> {
+  const openIds = new Set(openItems.map((i) => i.id));
+  const groups = new Map<number, number[]>();
+  for (const section of sections) {
+    for (const item of section.items) {
+      const ids = item.source_ids.filter((id) => openIds.has(id));
+      if (ids.length <= 1) continue; // single-id "groups" are uninteresting
+      const primary = ids[0];
+      groups.set(primary, ids);
+    }
+  }
+  return groups;
+}
+
+// ─── Action-row attachment ─────────────────────────────────────────────────
+
+/**
+ * Build the multi-select dropdown for closing items, plus a footer string
+ * (empty unless we had to truncate to the top 25 actionable items). Returns
+ * empty components when there are no open items.
+ *
+ * Optional `groups` maps a primary item id → all merged source ids (from LLM
+ * consolidation). When present, only primary items appear in the dropdown
+ * and selecting one closes all merged ids together.
+ */
+function buildActionRow(
+  items: TrackerItem[],
+  groups: Map<number, number[]> = new Map(),
+  overrides: Map<number, { description: string; owner: string | null }> = new Map(),
+): { components: unknown[]; footer: string } {
+  const open = items.filter((i) => i.status !== 'done');
+  if (open.length === 0) return { components: [], footer: '' };
+
+  // Hide non-primary members of any group — they'll be closed via their primary.
+  const nonPrimaryIds = new Set<number>();
+  for (const [primary, ids] of groups) {
+    for (const id of ids) if (id !== primary) nonPrimaryIds.add(id);
+  }
+  const visible = open.filter((i) => !nonPrimaryIds.has(i.id));
+
+  // Numerical (id ASC) order — consistent across all board paths.
+  const ordered = [...visible].sort((a, b) => a.id - b.id);
+  const top = ordered.slice(0, 25);
+  const components = buildBoardActionRows(top, groups, overrides);
+  if (components.length === 0) return { components: [], footer: '' };
+
+  const footer = visible.length > top.length
+    ? `\n\n*(dropdown shows ${top.length} of ${visible.length} open — re-run \`/board\` after closing some to see the rest)*`
+    : '';
+  return { components, footer };
 }
 
 // ─── Chunking ──────────────────────────────────────────────────────────────
@@ -46,21 +170,31 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
 /**
  * Discord caps a single message at 2000 chars. Split on blank-line section
  * boundaries when possible, falling back to line boundaries; never break in
- * the middle of a line. Sends the first chunk via reply/editReply and any
- * remaining chunks via followUp.
+ * the middle of a line. Sends the first chunk via reply/editReply (or
+ * followUp when `useFollowUp` is set) and any remaining chunks via followUp.
+ * Optional `components` are attached to the final chunk (so a dropdown lands
+ * on the same message as the tail of the content).
  */
-async function sendChunked(ctx: CommandContext, text: string, opts: { defer: boolean }): Promise<void> {
+async function sendChunked(
+  ctx: CommandContext,
+  text: string,
+  opts: { defer: boolean; components?: unknown[]; useFollowUp?: boolean },
+): Promise<void> {
   const MAX = 1900; // leave headroom under Discord's 2000-char limit
   const chunks = chunkText(text, MAX);
   const first = chunks[0] ?? '(empty)';
+  const components = opts.components ?? [];
+  const lastIdx = chunks.length - 1;
 
-  if (opts.defer) {
-    await ctx.editReply(first);
+  if (opts.useFollowUp) {
+    await ctx.followUp(first, lastIdx === 0 ? components : undefined);
+  } else if (opts.defer) {
+    await ctx.editReply(first, lastIdx === 0 ? components : undefined);
   } else {
-    await ctx.reply(first);
+    await ctx.reply(first, lastIdx === 0 ? components : undefined);
   }
   for (let i = 1; i < chunks.length; i++) {
-    await ctx.followUp(chunks[i]);
+    await ctx.followUp(chunks[i], i === lastIdx ? components : undefined);
   }
 }
 
@@ -114,7 +248,7 @@ interface ConsolidatedSection {
   items: ConsolidatedItem[];
 }
 
-async function getConsolidatedBoard(events: TrackerEvent[]): Promise<string | null> {
+async function getConsolidatedBoard(events: TrackerEvent[]): Promise<ConsolidatedSection[] | null> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return null;
 
@@ -166,34 +300,28 @@ async function getConsolidatedBoard(events: TrackerEvent[]): Promise<string | nu
     if (!text) return null;
 
     const parsed = JSON.parse(text) as { sections: ConsolidatedSection[] };
-    return formatConsolidatedBoard(parsed.sections, events);
+    return parsed.sections;
   } catch (err) {
     log.error('Consolidation failed:', err);
     return null;
   }
 }
 
-function formatConsolidatedBoard(sections: ConsolidatedSection[], events: TrackerEvent[]): string {
-  const lines: string[] = ['📋 **MOO Action Board**\n'];
+function formatConsolidatedSection(section: ConsolidatedSection, events: TrackerEvent[]): string {
+  const event = section.event_id ? events.find((e) => e.id === section.event_id) : null;
+  const tMinus = event?.date ? ` — ${formatTMinus(event.date)}` : '';
+  const lines: string[] = [`**${section.title}**${tMinus}`];
 
-  for (const section of sections) {
-    const event = section.event_id ? events.find((e) => e.id === section.event_id) : null;
-    const tMinus = event?.date ? ` — ${formatTMinus(event.date)}` : '';
-    lines.push(`**${section.title}**${tMinus}`);
-
-    for (const item of section.items) {
-      const icon = item.urgency === 'overdue' ? '🔴'
-        : item.urgency === 'stale' ? '⏸️'
-        : item.urgency === 'upcoming' ? '🟡'
-        : '⬜';
-      const owner = item.owner ? ` — ${item.owner}` : '';
-      const target = item.target_date ? ` (${formatDate(item.target_date)})` : '';
-      lines.push(`${icon} ${item.description}${owner}${target}`);
-    }
-    lines.push('');
+  for (const item of section.items) {
+    const icon = item.urgency === 'overdue' ? '🔴'
+      : item.urgency === 'stale' ? '⏸️'
+      : item.urgency === 'upcoming' ? '🟡'
+      : '⬜';
+    const idTag = item.source_ids.length > 0 ? ` \`#${item.source_ids.join(',#')}\`` : '';
+    const owner = item.owner ? ` — ${item.owner}` : '';
+    const target = item.target_date ? ` (${formatDate(item.target_date)})` : '';
+    lines.push(`${icon}${idTag} ${item.description}${owner}${target}`);
   }
-
-  lines.push('*Use `/board event:<name>` for raw details. `/done <id>` to complete.*');
   return lines.join('\n');
 }
 
@@ -311,7 +439,7 @@ function formatEventBoard(event: TrackerEvent): string {
 function formatItem(item: TrackerItem, icon: string): string {
   const owner = item.owner_name ? ` — ${item.owner_name}` : ' — *unowned*';
   const target = item.target_date ? ` (target: ${formatDate(item.target_date)})` : '';
-  return `${icon} ${item.description}${owner}${target}`;
+  return `${icon} \`#${item.id}\` ${item.description}${owner}${target}`;
 }
 
 function isOverdue(item: TrackerItem): boolean {
