@@ -18,6 +18,9 @@ import {
 } from '../tracker/store.js';
 import { addReminder, parseReminder } from '../remind/scheduler.js';
 import { executeFeedback } from '../feedback/handle-command.js';
+import { syncArchive } from '../eventbrite/sync.js';
+import { getLiveSales } from '../eventbrite/live.js';
+import { analyze as analyzeEventbrite } from '../eventbrite/analyze.js';
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('Chat');
@@ -80,7 +83,7 @@ export const toolDeclarations = [
   },
   {
     name: 'query_events',
-    description: 'List orchestra events/concerts. Returns upcoming events by default.',
+    description: 'List orchestra board/calendar events (rehearsals, sectionals, social events tracked on the Discord event board). NOT for Eventbrite ticketed concerts — for those use analyze_eventbrite, get_eventbrite_live_sales, or sync_eventbrite_archive.',
     parameters: {
       type: 'object',
       properties: {
@@ -90,7 +93,7 @@ export const toolDeclarations = [
   },
   {
     name: 'read_channel_messages',
-    description: 'Read recent messages from a Discord channel. Use this to get conversation context.',
+    description: 'Read recent messages from a Discord channel. Use only when you need quoted conversation history you do not already have in the current message thread. Do NOT call this just to gather generic context — the current user message plus the system prompt are usually sufficient.',
     parameters: {
       type: 'object',
       properties: {
@@ -136,6 +139,38 @@ export const toolDeclarations = [
       required: ['feedback'],
     },
   },
+  {
+    name: 'sync_eventbrite_archive',
+    description: 'Bring the local Eventbrite archive up to date. Lists all past org events, snapshots any that are missing or within the late-check-in window (24h after event end). Use when asked about past events to ensure data is available, or when the user explicitly asks to sync/refresh archives. Cheap if everything is already frozen. Returns a report of what was added/refreshed/skipped.',
+    parameters: {
+      type: 'object',
+      properties: {
+        force: { type: 'boolean', description: 'Re-snapshot every past event even if already frozen. Defaults to false.' },
+      },
+    },
+  },
+  {
+    name: 'get_eventbrite_live_sales',
+    description: 'Get current ticket sales for active (non-ended) Eventbrite events. Returns gross, net, attendee count, and per-ticket-class breakdown with remaining capacity. Cached for 60s. Use for questions about how an upcoming concert is selling.',
+    parameters: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'string', description: 'Eventbrite event ID. Omit to get all active events.' },
+      },
+    },
+  },
+  {
+    name: 'analyze_eventbrite',
+    description: 'Hand off a data-analysis question about the Eventbrite archive to a stronger model that will write and run Python (pandas/numpy) against the archived JSON. Use for: per-ticket-class breakdowns, check-in / no-show rates, registration vs attendance comparisons, refund rates, revenue trends, growth over time, multi-event aggregates, ranking events by any metric, or anything beyond a one-shot lookup. Prefer this over scrolling Discord channels when the question is about past concerts, tickets, attendees, or sales. Make sure the archive is up to date first via sync_eventbrite_archive. Returns the final answer plus the code that was run.',
+    parameters: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'The analytical question, in plain English.' },
+        context: { type: 'string', description: 'Optional extra context from the conversation that the analyst should know (e.g. specific event IDs or filters the user mentioned).' },
+      },
+      required: ['question'],
+    },
+  },
 ];
 
 // ─── Tool Execution ──────────────────────────────────────────────────────────
@@ -157,6 +192,9 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
     case 'list_channels': return listChannels(args);
     case 'create_reminder': return createReminderTool(args, ctx);
     case 'submit_feedback': return submitFeedbackTool(args, ctx);
+    case 'sync_eventbrite_archive': return syncEventbriteArchiveTool(args);
+    case 'get_eventbrite_live_sales': return getEventbriteLiveSalesTool(args);
+    case 'analyze_eventbrite': return analyzeEventbriteTool(args);
     default: return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
 }
@@ -362,5 +400,56 @@ async function submitFeedbackTool(args: Record<string, unknown>, ctx: ToolCallCo
   } catch (err) {
     log.error('Feedback tool call failed:', err);
     return JSON.stringify({ error: 'Failed to submit feedback. Try /feedback instead.' });
+  }
+}
+
+async function syncEventbriteArchiveTool(args: Record<string, unknown>): Promise<string> {
+  try {
+    const report = await syncArchive({ force: args.force as boolean | undefined });
+    return JSON.stringify(report);
+  } catch (err) {
+    log.error('sync_eventbrite_archive failed:', err);
+    return JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+async function getEventbriteLiveSalesTool(args: Record<string, unknown>): Promise<string> {
+  try {
+    const results = await getLiveSales(args.event_id as string | undefined);
+    return JSON.stringify({ events: results });
+  } catch (err) {
+    log.error('get_eventbrite_live_sales failed:', err);
+    return JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+async function analyzeEventbriteTool(args: Record<string, unknown>): Promise<string> {
+  const question = args.question as string;
+  if (!question) return JSON.stringify({ error: 'question is required' });
+  const context = args.context as string | undefined;
+  try {
+    const result = await analyzeEventbrite(question, context);
+    return JSON.stringify({
+      answer: result.answer,
+      summary: result.summary,
+      iterations_used: result.iterations_used,
+      total_duration_ms: result.total_duration_ms,
+      // Surface the code that ran so the chat LLM (and audit log) can see exactly what was executed.
+      transcript: result.transcript.map((t) => ({
+        iteration: t.iteration,
+        reason: t.reason,
+        code: t.code,
+        exit_code: t.exit_code,
+        // Keep stdout/stderr in the response so the chat LLM can reason about evidence, capped via runner's maxBytes.
+        stdout: t.stdout,
+        stderr: t.stderr,
+        duration_ms: t.duration_ms,
+        timed_out: t.timed_out,
+      })),
+      error: result.error,
+    });
+  } catch (err) {
+    log.error('analyze_eventbrite failed:', err);
+    return JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
   }
 }

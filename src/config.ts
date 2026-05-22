@@ -33,6 +33,10 @@ export const WEB_APPROVER_ROLE = process.env.WEB_APPROVER_ROLE || 'moomie:web-ap
 export const CODING_AGENT = process.env.CODING_AGENT || 'gemini';
 export const AGENT_WORKSPACE = process.env.AGENT_WORKSPACE || './workspace';
 
+// Eventbrite
+export const EVENTBRITE_ORG_ID = process.env.EVENTBRITE_ORG_ID || '2020393260733';
+export const EVENTBRITE_DATA_DIR = process.env.EVENTBRITE_DATA_DIR || './data/eventbrite';
+
 // LLM models — pro for nuanced extraction, flash for everything else
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 export const MODEL_CHAT = 'gemini-flash-latest';

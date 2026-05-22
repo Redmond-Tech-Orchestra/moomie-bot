@@ -14,6 +14,7 @@ import { autocompleteEvent } from '../features/tracker/autocomplete.js';
 import { registerConversationWatcher } from '../features/tracker/conversation-watcher.js';
 import { isBoardSelect, handleBoardSelect } from '../features/tracker/board-interactions.js';
 import { handleChatMessage } from '../features/chat/handle-message.js';
+import { chunkText, DISCORD_CHUNK_MAX } from './chunk.js';
 import { commentOnPR } from '../features/coding/github-client.js';
 import { trackPR } from '../features/coding/issue-tracker.js';
 import { approveAndMerge } from '../features/coding/pr-actions.js';
@@ -303,7 +304,11 @@ export async function startDiscord(): Promise<void> {
         channelName: (message.channel as TextChannel).name ?? 'DM',
         content,
       });
-      await message.reply(response);
+      const chunks = chunkText(response, DISCORD_CHUNK_MAX);
+      await message.reply(chunks[0]);
+      for (let i = 1; i < chunks.length; i++) {
+        await message.channel.send(chunks[i]);
+      }
     } catch (err) {
       log.error('Error handling message:', err);
       await message.reply('Something went wrong. Moo. 🐄');

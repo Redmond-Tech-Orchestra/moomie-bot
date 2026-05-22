@@ -4,6 +4,7 @@ import { MODEL_CHAT, geminiUrl } from '../../config.js';
 import { getActiveEvents, getItemsForEvent, getAllOpenItems, getOrphanItems, type TrackerEvent, type TrackerItem } from './store.js';
 import { buildBoardActionRows } from './board-interactions.js';
 import { createLogger } from '../../logger.js';
+import { chunkText, DISCORD_CHUNK_MAX } from '../../adapters/chunk.js';
 
 const log = createLogger('Board');
 
@@ -180,8 +181,7 @@ async function sendChunked(
   text: string,
   opts: { defer: boolean; components?: unknown[]; useFollowUp?: boolean },
 ): Promise<void> {
-  const MAX = 1900; // leave headroom under Discord's 2000-char limit
-  const chunks = chunkText(text, MAX);
+  const chunks = chunkText(text, DISCORD_CHUNK_MAX);
   const first = chunks[0] ?? '(empty)';
   const components = opts.components ?? [];
   const lastIdx = chunks.length - 1;
@@ -198,39 +198,6 @@ async function sendChunked(
   }
 }
 
-function chunkText(text: string, max: number): string[] {
-  if (text.length <= max) return [text];
-  const chunks: string[] = [];
-  // Prefer splitting on blank-line section boundaries
-  const sections = text.split(/\n\n+/);
-  let current = '';
-  const flush = () => {
-    if (current.length > 0) { chunks.push(current); current = ''; }
-  };
-  for (const section of sections) {
-    const candidate = current ? `${current}\n\n${section}` : section;
-    if (candidate.length <= max) {
-      current = candidate;
-      continue;
-    }
-    flush();
-    if (section.length <= max) {
-      current = section;
-    } else {
-      // Section itself exceeds max — split by lines, then hard-wrap if a line is still too long
-      for (const line of section.split('\n')) {
-        const next = current ? `${current}\n${line}` : line;
-        if (next.length <= max) { current = next; continue; }
-        flush();
-        if (line.length <= max) { current = line; continue; }
-        // Pathologically long single line — hard split
-        for (let i = 0; i < line.length; i += max) chunks.push(line.slice(i, i + max));
-      }
-    }
-  }
-  flush();
-  return chunks;
-}
 
 // ─── LLM Consolidation ─────────────────────────────────────────────────────
 
