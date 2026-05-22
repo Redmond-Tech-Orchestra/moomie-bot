@@ -109,15 +109,44 @@ Directory tree:
     dashboard.
   - **Actually attended (door scans)**: rows where \`checked_in == True\`
     (equivalently \`status == 'Checked In'\`).
-  - **No-shows**: registered minus checked-in. Across our archive this is
-    typically ~half of registrants. When reporting attendance to humans,
-    surface both numbers (e.g. "1,201 registered, 912 checked in") rather
-    than picking one and calling it "attendees".
+  - **No-shows / didn't show up**: rows where
+    \`status == 'Attending'\` (registered but never scanned at the door).
+    Counter-intuitive but critical: once someone checks in, their status
+    flips from \`'Attending'\` to \`'Checked In'\`, so rows still labelled
+    \`'Attending'\` after the event are precisely the no-shows. Across our
+    archive this is typically ~half of registrants.
   - **Refunded / cancelled**: rows where \`refunded == True\` or
     \`cancelled == True\` (status \`'Not Attending'\` or \`'Deleted'\`).
     Exclude these from any registration or revenue total.
   - **Do NOT** filter by \`status == 'Attending'\` and call that the total —
     that excludes the people who actually showed up (\`'Checked In'\`).
+
+  ### Mapping user language to the right column
+
+  When the user's question uses informal words, default to this mapping
+  unless they're clearly asking about the registration funnel:
+
+  - "people", "customers", "audience", "folks who came",
+    "people who showed up", "attended", "turnout"
+    → \`checked_in == True\` (actually walked through the door).
+  - "attendees" (used explicitly), "registrants", "tickets sold",
+    "sign-ups"
+    → registered set: \`status in ('Attending', 'Checked In')\`.
+  - "showed up rate", "attendance rate", "% who came"
+    → numerator \`checked_in == True\`, denominator registered set.
+  - "no-show rate"
+    → numerator \`status == 'Attending'\` (post-event), denominator
+    registered set.
+
+  ### Don't relabel columns in output
+
+  When presenting tabular results, keep the raw column names and status
+  values as they appear in the data (\`status\`, \`'Attending'\`,
+  \`'Checked In'\`, \`checked_in\`). Do **not** rename \`status\` to
+  "attended" or rewrite \`'Attending'\` to "no-show" inside a results
+  table — that hides the source of the number and makes the output
+  un-auditable. Add a separate prose sentence explaining what the values
+  mean if needed, but leave the underlying labels intact.
 
 - **orders.json**: Envelope \`{ ..., items: [...] }\`. Each order:
     - \`id\`, \`event_id\`, \`status\` ('placed', 'refunded', ...)
