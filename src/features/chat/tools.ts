@@ -83,7 +83,7 @@ export const toolDeclarations = [
   },
   {
     name: 'query_events',
-    description: 'List orchestra events/concerts. Returns upcoming events by default.',
+    description: 'List orchestra board/calendar events (rehearsals, sectionals, social events tracked on the Discord event board). NOT for Eventbrite ticketed concerts — for those use analyze_eventbrite, get_eventbrite_live_sales, or sync_eventbrite_archive.',
     parameters: {
       type: 'object',
       properties: {
@@ -93,7 +93,7 @@ export const toolDeclarations = [
   },
   {
     name: 'read_channel_messages',
-    description: 'Read recent messages from a Discord channel. Use this to get conversation context.',
+    description: 'Read recent messages from a Discord channel. Use only when you need quoted conversation history you do not already have in the current message thread. Do NOT call this just to gather generic context — the current user message plus the system prompt are usually sufficient.',
     parameters: {
       type: 'object',
       properties: {
@@ -161,7 +161,7 @@ export const toolDeclarations = [
   },
   {
     name: 'analyze_eventbrite',
-    description: 'Hand off a data-analysis question about the Eventbrite archive to a stronger model that will write and run Python (pandas/numpy) against the archived JSON. Use for questions that require joining/aggregating data across events, computing statistics, comparing campaigns, or anything beyond a simple lookup. Make sure the archive is up to date first via sync_eventbrite_archive. Returns the final answer plus the code that was run.',
+    description: 'Hand off a data-analysis question about the Eventbrite archive to a stronger model that will write and run Python (pandas/numpy) against the archived JSON. Use for: per-ticket-class breakdowns, check-in / no-show rates, registration vs attendance comparisons, refund rates, revenue trends, growth over time, multi-event aggregates, ranking events by any metric, or anything beyond a one-shot lookup. Prefer this over scrolling Discord channels when the question is about past concerts, tickets, attendees, or sales. Make sure the archive is up to date first via sync_eventbrite_archive. Returns the final answer plus the code that was run.',
     parameters: {
       type: 'object',
       properties: {
