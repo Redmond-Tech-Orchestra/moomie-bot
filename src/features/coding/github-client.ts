@@ -129,4 +129,62 @@ export async function commentOnPR(repo: string, prNumber: number, body: string):
   });
 }
 
+export interface PullRequestMergeability {
+  state: 'open' | 'closed';
+  merged: boolean;
+  mergeable: boolean | null;
+  /** GitHub's combined readiness signal: `clean`, `blocked`, `behind`, `dirty`, `unstable`, `unknown`. */
+  mergeableState: string;
+  headSha: string;
+}
+
+/** Fetch just the bits needed to decide if a PR is safe to merge. */
+export async function getPullRequestMergeability(repo: string, prNumber: number): Promise<PullRequestMergeability | undefined> {
+  const octokit = getOctokit();
+  try {
+    const { data } = await octokit.pulls.get({ owner: GITHUB_OWNER, repo, pull_number: prNumber });
+    return {
+      state: data.state as 'open' | 'closed',
+      merged: data.merged,
+      mergeable: data.mergeable,
+      mergeableState: data.mergeable_state,
+      headSha: data.head.sha,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Submit an APPROVE review on a PR as the bot. */
+export async function approvePullRequest(repo: string, prNumber: number, body: string): Promise<void> {
+  const octokit = getOctokit();
+  await octokit.pulls.createReview({
+    owner: GITHUB_OWNER,
+    repo,
+    pull_number: prNumber,
+    event: 'APPROVE',
+    body,
+  });
+}
+
+export interface MergeOptions {
+  mergeMethod?: 'merge' | 'squash' | 'rebase';
+  commitTitle?: string;
+  commitMessage?: string;
+}
+
+/** Merge a PR. Returns the merge commit SHA on success. Throws on failure. */
+export async function mergePullRequest(repo: string, prNumber: number, opts: MergeOptions = {}): Promise<string> {
+  const octokit = getOctokit();
+  const { data } = await octokit.pulls.merge({
+    owner: GITHUB_OWNER,
+    repo,
+    pull_number: prNumber,
+    merge_method: opts.mergeMethod ?? 'squash',
+    commit_title: opts.commitTitle,
+    commit_message: opts.commitMessage,
+  });
+  return data.sha;
+}
+
 

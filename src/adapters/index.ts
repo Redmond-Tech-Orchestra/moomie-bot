@@ -6,6 +6,6 @@
  */
 
 export { notifyUser, initNotifications } from './notify.js';
-export type { NotificationTarget } from './notify.js';
+export type { NotificationTarget, PRActionRef } from './notify.js';
 export { getRecentMessages } from './discord-messages.js';
 export type { ChannelMessages } from './discord-messages.js';

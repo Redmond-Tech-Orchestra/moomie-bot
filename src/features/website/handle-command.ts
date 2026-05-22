@@ -4,6 +4,7 @@ import { trackIssue } from '../coding/issue-tracker.js';
 import { generateIssueTitle } from '../coding/title-generator.js';
 import { saveAttachment } from './attachment-store.js';
 import { GITHUB_REPO } from '../../config.js';
+import { notifyUser } from '../../adapters/index.js';
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('Website');
@@ -52,16 +53,42 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
       body,
     });
 
+    // Try to spin up a thread so the entire trail of work (issue update, PR
+    // ready, PR revisions) stays in one place. Fall back to the parent
+    // channel if threads aren't available here (DMs, Teams, etc).
+    const threadId = ctx.startThread
+      ? await ctx.startThread(`#${issue.number}: ${title}`)
+      : undefined;
+    const trackingChannelId = threadId ?? ctx.channelId;
+
     trackIssue(issue.number, GITHUB_REPO, {
-      channelId: ctx.channelId,
+      channelId: trackingChannelId,
       userId: ctx.userId,
       platform: ctx.platform,
       conversationRef: ctx.conversationRef,
     });
 
-    await ctx.editReply(
-      `Issue created: ${issue.html_url}\nMoomie will start working on it shortly.`
-    );
+    const summary = threadId
+      ? `Issue created: ${issue.html_url}\nFollow along in the thread — Moomie will post updates there.`
+      : `Issue created: ${issue.html_url}\nMoomie will start working on it shortly.`;
+    await ctx.editReply(summary);
+
+    // Drop the kickoff message into the thread itself so the trail starts
+    // there, not in the parent channel.
+    if (threadId) {
+      try {
+        await notifyUser(
+          {
+            platform: 'discord',
+            channelId: threadId,
+            userId: ctx.userId,
+          },
+          `Working on this now — I'll post here when the PR is ready.\nIssue: ${issue.html_url}`,
+        );
+      } catch (err) {
+        log.warn(`Failed to post kickoff message in thread ${threadId}:`, err);
+      }
+    }
   } catch (err) {
     log.error('Failed to create issue:', err);
     await ctx.editReply('Something went wrong creating the issue. Check the logs.');

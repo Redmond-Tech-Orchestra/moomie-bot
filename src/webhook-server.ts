@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import type { Client } from 'discord.js';
-import { getTrackedIssue, untrackIssue } from './features/coding/issue-tracker.js';
+import { getTrackedIssue, untrackIssue, getTrackedPR, untrackPR } from './features/coding/issue-tracker.js';
 import { isOrgMember, listReviewComments } from './features/coding/github-client.js';
 import { runCodingTask, runRevisionTask, getQueueStatus } from './features/coding/job-runner.js';
 import { startTeams } from './adapters/teams.js';
@@ -121,7 +121,7 @@ export function startServer(discordClient: Client): express.Express {
 
 // ─── Webhook Handlers ─────────────────────────────────────────────────────────
 
-async function handlePullRequest(pr: { body?: string; html_url: string }, repo?: string): Promise<void> {
+async function handlePullRequest(pr: { number: number; body?: string; html_url: string }, repo?: string): Promise<void> {
   const issueRefs = pr.body?.matchAll(/(?:closes|fixes|resolves)\s+#(\d+)/gi);
   if (!issueRefs) return;
 
@@ -136,7 +136,11 @@ async function handlePullRequest(pr: { body?: string; html_url: string }, repo?:
       const previewSuffix = repoName === GITHUB_REPO
         ? `\nProposed change: https://preview.redmondtechorchestra.org`
         : '';
-      await notifyUser(tracked, `PR is ready for issue #${issueNumber}: ${pr.html_url}${previewSuffix}`);
+      await notifyUser(
+        tracked,
+        `PR is ready for issue #${issueNumber}: ${pr.html_url}${previewSuffix}`,
+        { kind: 'pr-actions', repo: repoName, prNumber: pr.number },
+      );
       untrackIssue(issueNumber, repoName);
     } catch (err) {
       log.error(`Failed to notify user for issue #${issueNumber}:`, err);
@@ -204,10 +208,17 @@ async function handleIssueLabelAdded(
           const previewSuffix = repoName === GITHUB_REPO
             ? `\nProposed change: https://preview.redmondtechorchestra.org`
             : '';
-          await notifyUser(tracked, `PR ready for issue #${issue.number}: ${result.prUrl}${previewSuffix}`);
+          await notifyUser(
+            tracked,
+            `PR ready for issue #${issue.number}: ${result.prUrl}${previewSuffix}`,
+            result.prNumber ? { kind: 'pr-actions', repo: repoName, prNumber: result.prNumber } : undefined,
+          );
         } catch (err) {
           log.error(`Failed to notify user for PR on #${issue.number}:`, err);
         }
+        // Untrack so the `pull_request.opened` webhook (which also notifies as
+        // a fallback) doesn't send a duplicate "PR is ready" message.
+        untrackIssue(issue.number, repoName);
       }
     } else {
       log.error(`Agent failed for #${issue.number}: ${result.error}`);
@@ -285,12 +296,12 @@ async function handleIssueComment(payload: IssueCommentPayload): Promise<void> {
   if (!feedback) return;
 
   log.info(`Revising ${repo}/PR${payload.issue.number} from comment by ${sender.login}`);
-  void runRevisionTask({
+  notifyOnRevisionComplete(repo, payload.issue.number, runRevisionTask({
     repo,
     prNumber: payload.issue.number,
     feedback,
     requestedBy: sender.login,
-  });
+  }));
 }
 
 interface PullRequestReviewPayload {
@@ -347,10 +358,46 @@ async function handlePullRequestReview(payload: PullRequestReviewPayload): Promi
   const feedback = feedbackParts.join('\n\n');
 
   log.info(`Revising ${repo}/PR${payload.pull_request.number} from review by ${sender.login} (${inline.length} inline comments)`);
-  void runRevisionTask({
+  notifyOnRevisionComplete(repo, payload.pull_request.number, runRevisionTask({
     repo,
     prNumber: payload.pull_request.number,
     feedback,
     requestedBy: sender.login,
+  }));
+}
+
+/**
+ * Bridge a revision job's result back to the originating Discord channel (if
+ * any). `runRevisionTask` always returns — even on failure — so we just need
+ * to look up the tracker entry once it settles.
+ */
+function notifyOnRevisionComplete(
+  repo: string,
+  prNumber: number,
+  job: ReturnType<typeof runRevisionTask>,
+): void {
+  job.then(async (result) => {
+    const tracked = getTrackedPR(prNumber, repo);
+    if (!tracked) return;
+    try {
+      if (result.success) {
+        await notifyUser(
+          tracked,
+          `Revision pushed to PR #${prNumber}: ${result.prUrl ?? ''}`.trim(),
+          { kind: 'pr-actions', repo, prNumber },
+        );
+      } else {
+        await notifyUser(
+          tracked,
+          `Couldn't revise PR #${prNumber}: ${result.error ?? 'unknown error'}`,
+        );
+      }
+    } catch (err) {
+      log.error(`Failed to notify user for revision on ${repo}/PR${prNumber}:`, err);
+    } finally {
+      untrackPR(prNumber, repo);
+    }
+  }).catch((err) => {
+    log.error(`Unexpected error in revision job for ${repo}/PR${prNumber}:`, err);
   });
 }

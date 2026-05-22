@@ -22,6 +22,22 @@ registerMigration((db) => {
       PRIMARY KEY (issue_number, repo)
     )
   `);
+
+  // Parallel table for PR revisions — when a user requests changes to an
+  // existing PR (via Discord reply relay, etc.) we record the originating
+  // channel so the revision-complete notification can find its way back.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tracked_prs (
+      pr_number INTEGER NOT NULL,
+      repo TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      platform TEXT NOT NULL DEFAULT 'discord',
+      conversation_ref TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      PRIMARY KEY (pr_number, repo)
+    )
+  `);
 });
 
 interface TrackedIssue {
@@ -58,4 +74,32 @@ export function getTrackedIssue(issueNumber: number, repo: string): TrackedIssue
 export function untrackIssue(issueNumber: number, repo: string): void {
   const db = getDb();
   db.prepare(`DELETE FROM tracked_issues WHERE issue_number = ? AND repo = ?`).run(issueNumber, repo);
+}
+
+export function trackPR(prNumber: number, repo: string, { channelId, userId, platform, conversationRef }: Omit<TrackedIssue, 'createdAt'>): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT OR REPLACE INTO tracked_prs (pr_number, repo, channel_id, user_id, platform, conversation_ref) VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(prNumber, repo, channelId, userId, platform, conversationRef ?? null);
+}
+
+export function getTrackedPR(prNumber: number, repo: string): TrackedIssue | undefined {
+  const db = getDb();
+  const row = db.prepare(
+    `SELECT channel_id, user_id, platform, conversation_ref, created_at FROM tracked_prs WHERE pr_number = ? AND repo = ?`
+  ).get(prNumber, repo) as { channel_id: string; user_id: string; platform: string; conversation_ref: string | null; created_at: number } | undefined;
+
+  if (!row) return undefined;
+  return {
+    channelId: row.channel_id,
+    userId: row.user_id,
+    platform: row.platform as 'discord' | 'teams',
+    conversationRef: row.conversation_ref ?? undefined,
+    createdAt: row.created_at,
+  };
+}
+
+export function untrackPR(prNumber: number, repo: string): void {
+  const db = getDb();
+  db.prepare(`DELETE FROM tracked_prs WHERE pr_number = ? AND repo = ?`).run(prNumber, repo);
 }
