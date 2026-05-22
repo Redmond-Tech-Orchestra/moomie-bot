@@ -3,6 +3,7 @@ import { getOctokit } from '../coding/github-client.js';
 import { trackIssue } from '../coding/issue-tracker.js';
 import { generateIssueTitle } from '../coding/title-generator.js';
 import { runCodingTask } from '../coding/job-runner.js';
+import { notifyUser } from '../../adapters/index.js';
 import { GITHUB_OWNER, GITHUB_BOT_REPO, PORT } from '../../config.js';
 import { createLogger } from '../../logger.js';
 
@@ -21,6 +22,8 @@ interface FeedbackOptions {
   conversationRef?: string;
   /** The moomie message being replied to */
   referencedMessage?: string;
+  /** Pre-generated issue title (avoids redundant LLM call when caller already needed it for a thread name). */
+  titleOverride?: string;
 }
 
 /**
@@ -46,7 +49,7 @@ export async function executeFeedback(opts: FeedbackOptions): Promise<string> {
   ].filter(Boolean).join('\n');
 
   // 2. Create GitHub issue on the bot repo
-  const title = await generateIssueTitle(`Feedback: ${opts.feedback}`);
+  const title = opts.titleOverride ?? await generateIssueTitle(`Feedback: ${opts.feedback}`);
 
   const octokit = getOctokit();
   const { data: issue } = await octokit.issues.create({
@@ -157,19 +160,40 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
   await ctx.deferReply();
 
   try {
+    // Generate the title first so the thread name can include it. We pay the
+    // small extra latency in exchange for a coherent "trail of work" in one
+    // thread (issue → PR → revisions).
+    const title = await generateIssueTitle(`Feedback: ${args}`);
+    const threadId = ctx.startThread
+      ? await ctx.startThread(`Feedback: ${title}`)
+      : undefined;
+
     const issueUrl = await executeFeedback({
       feedback: args,
-      channelId: ctx.channelId,
+      channelId: threadId ?? ctx.channelId,
       channelName: ctx.channelId, // slash commands don't carry channel name; use ID as fallback
       userId: ctx.userId,
       userName: ctx.userName,
       platform: ctx.platform,
       conversationRef: ctx.conversationRef,
+      titleOverride: title,
     });
 
-    await ctx.editReply(
-      `Got it — I'm investigating and will try to fix myself. 🐄\nIssue: ${issueUrl}\nI'll follow up with a PR when I'm done.`
-    );
+    const summary = threadId
+      ? `Got it — investigating in the thread. 🐄\nIssue: ${issueUrl}`
+      : `Got it — I'm investigating and will try to fix myself. 🐄\nIssue: ${issueUrl}\nI'll follow up with a PR when I'm done.`;
+    await ctx.editReply(summary);
+
+    if (threadId) {
+      try {
+        await notifyUser(
+          { platform: 'discord', channelId: threadId, userId: ctx.userId },
+          `Looking into this now. I'll post the PR here when I'm done.\nIssue: ${issueUrl}`,
+        );
+      } catch (err) {
+        log.warn(`Failed to post kickoff message in feedback thread ${threadId}:`, err);
+      }
+    }
   } catch (err) {
     log.error('Command failed:', err);
     await ctx.editReply('Something went wrong processing the feedback. Check the logs.');

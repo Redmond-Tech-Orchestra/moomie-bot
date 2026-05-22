@@ -25,6 +25,9 @@ export const PORT = process.env.PORT || '3000';
 // Bot permissions
 export const BOT_OWNER_ID = process.env.BOT_OWNER_ID || '127287481077989377';
 export const MUSIC_ADMIN_ROLE = process.env.MUSIC_ADMIN_ROLE || 'Librarian';
+// Discord role allowed to approve+merge PRs from inside Discord threads.
+// Can be a role name or a snowflake ID.
+export const WEB_APPROVER_ROLE = process.env.WEB_APPROVER_ROLE || 'moomie:web-approvers';
 
 // Coding agent
 export const CODING_AGENT = process.env.CODING_AGENT || 'gemini';

@@ -18,6 +18,7 @@ const JOB_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour — discard queued jobs older t
 interface OrchestratorResult {
   success: boolean;
   prUrl?: string;
+  prNumber?: number;
   issueNumber?: number;
   error?: string;
   summary?: string;
@@ -419,6 +420,7 @@ async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResu
     return {
       success: true,
       prUrl: pr.html_url,
+      prNumber: pr.number,
       issueNumber,
       summary: result.summary,
     };
@@ -537,7 +539,7 @@ async function executeRevision(options: RevisionTaskOptions): Promise<Orchestrat
     result: `Pushed ${newSha}`,
   });
 
-  return { success: true, prUrl: pr.htmlUrl, summary: result.summary };
+  return { success: true, prUrl: pr.htmlUrl, prNumber: pr.number, summary: result.summary };
 }
 
 async function safeComment(repo: string, prNumber: number, body: string): Promise<void> {

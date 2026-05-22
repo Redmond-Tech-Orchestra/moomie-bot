@@ -1,5 +1,11 @@
 import { Client, GatewayIntentBits, Partials } from 'discord.js';
-import type { ChatInputCommandInteraction, TextChannel } from 'discord.js';
+import type { ChatInputCommandInteraction, TextChannel, ButtonInteraction, ModalSubmitInteraction, GuildMemberRoleManager } from 'discord.js';
+import {
+  ActionRowBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+} from 'discord.js';
 import { loadCommands } from '../commands/slash-commands.js';
 import { handlers } from '../commands/command-registry.js';
 import { initScheduler } from '../features/remind/scheduler.js';
@@ -9,7 +15,11 @@ import { registerConversationWatcher } from '../features/tracker/conversation-wa
 import { isBoardSelect, handleBoardSelect } from '../features/tracker/board-interactions.js';
 import { handleChatMessage } from '../features/chat/handle-message.js';
 import { commentOnPR } from '../features/coding/github-client.js';
-import { GITHUB_OWNER } from '../config.js';
+import { trackPR } from '../features/coding/issue-tracker.js';
+import { approveAndMerge } from '../features/coding/pr-actions.js';
+import { runRevisionTask } from '../features/coding/job-runner.js';
+import { notifyOnRevisionComplete } from '../features/coding/revision-notifier.js';
+import { GITHUB_OWNER, GITHUB_REPO, GITHUB_BOT_REPO, WEB_APPROVER_ROLE } from '../config.js';
 import type { CommandContext } from '../types.js';
 import { createLogger } from '../logger.js';
 
@@ -81,6 +91,32 @@ function buildContext(interaction: ChatInputCommandInteraction, overrides?: { ta
     followUp: async (text: string, components?: unknown[]) => {
       await interaction.followUp({ content: text, components: (components ?? []) as never });
     },
+    startThread: async (name: string) => {
+      try {
+        // The reply message is the natural anchor for the thread, so callers
+        // see the original prompt + thread together in the channel.
+        const replyMsg = deferred || interaction.replied
+          ? await interaction.fetchReply()
+          : null;
+        if (!replyMsg || typeof (replyMsg as { startThread?: unknown }).startThread !== 'function') {
+          return undefined;
+        }
+        // Threads can't be started inside other threads, and DMs can't have
+        // threads at all. Bail quietly if so — callers will fall back to the
+        // parent channel.
+        const parent = interaction.channel;
+        if (!parent || parent.isThread() || parent.isDMBased()) return undefined;
+
+        // Discord caps thread names at 100 chars.
+        const trimmed = name.slice(0, 100);
+        const thread = await (replyMsg as { startThread: (opts: { name: string; autoArchiveDuration: number }) => Promise<{ id: string }> })
+          .startThread({ name: trimmed, autoArchiveDuration: 10080 });
+        return thread.id;
+      } catch (err) {
+        log.warn(`Failed to start thread "${name}":`, err);
+        return undefined;
+      }
+    },
   };
 }
 
@@ -117,6 +153,30 @@ export async function startDiscord(): Promise<void> {
           if (!interaction.replied) {
             await interaction.reply({ content: 'Something went wrong applying that change.', ephemeral: true });
           }
+        }
+      }
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('pr:')) {
+      try {
+        await handlePRButton(interaction);
+      } catch (err) {
+        log.error('PR button handler failed:', err);
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({ content: 'Something went wrong handling that action.', ephemeral: true });
+        }
+      }
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('pr:revise:')) {
+      try {
+        await handlePRReviseModal(interaction);
+      } catch (err) {
+        log.error('PR revise modal handler failed:', err);
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({ content: 'Something went wrong sending that revision.', ephemeral: true });
         }
       }
       return;
@@ -207,6 +267,13 @@ export async function startDiscord(): Promise<void> {
         try {
           const userName = message.member?.displayName ?? message.author.displayName ?? message.author.username;
           await commentOnPR(repo, prNumber, `@moomie-bot ${content}\n\n_(via Discord reply from ${userName})_`);
+          // Record the originating channel so the revision-complete webhook
+          // can notify back to Discord (the PR comment alone is invisible there).
+          trackPR(prNumber, repo, {
+            channelId: message.channelId,
+            userId: message.author.id,
+            platform: 'discord',
+          });
           await message.react('👀');
         } catch (err) {
           log.error(`Failed to relay Discord reply to ${repo}/PR${prNumber}:`, err);
@@ -244,4 +311,161 @@ export async function startDiscord(): Promise<void> {
   });
 
   await client.login(process.env.DISCORD_TOKEN);
+}
+
+// ─── PR Action Buttons ──────────────────────────────────────────────────────
+
+/**
+ * Parse `pr:<action>:<repo>:<prNumber>` custom IDs. Returns null on malformed
+ * input or on a repo outside our allow-list, so foreign or spoofed buttons
+ * are dropped before any GitHub call.
+ */
+const ALLOWED_PR_REPOS = new Set([GITHUB_REPO, GITHUB_BOT_REPO]);
+
+function parsePRCustomId(customId: string): { action: string; repo: string; prNumber: number } | null {
+  const parts = customId.split(':');
+  if (parts.length !== 4 || parts[0] !== 'pr') return null;
+  const prNumber = parseInt(parts[3], 10);
+  if (!Number.isFinite(prNumber)) return null;
+  if (!ALLOWED_PR_REPOS.has(parts[2])) return null;
+  return { action: parts[1], repo: parts[2], prNumber };
+}
+
+/**
+ * Permission gate for PR-action buttons. `WEB_APPROVER_ROLE` may hold a role
+ * name OR a snowflake ID. The cached-member path (the common case) accepts
+ * either. The raw string[] fallback only carries role IDs, so it can only
+ * match when the env var is a snowflake.
+ */
+function memberHasApproverRole(roles: GuildMemberRoleManager | string[] | undefined): boolean {
+  if (!roles) return false;
+  if (Array.isArray(roles)) {
+    // Raw API path: array holds role IDs only. Names can't be compared here.
+    if (!/^\d+$/.test(WEB_APPROVER_ROLE)) return false;
+    return roles.includes(WEB_APPROVER_ROLE);
+  }
+  return roles.cache.some((r) => r.id === WEB_APPROVER_ROLE || r.name === WEB_APPROVER_ROLE);
+}
+
+async function handlePRButton(interaction: ButtonInteraction): Promise<void> {
+  const parsed = parsePRCustomId(interaction.customId);
+  if (!parsed) return;
+
+  // Roles only resolve in guild context — DMs can't carry server roles.
+  const member = interaction.member;
+  const roles = member && 'roles' in member ? member.roles as GuildMemberRoleManager : undefined;
+  if (!memberHasApproverRole(roles)) {
+    await interaction.reply({
+      content: `You need the **${WEB_APPROVER_ROLE}** role to do that.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const actorName = interaction.member && 'displayName' in interaction.member
+    ? (interaction.member.displayName as string)
+    : interaction.user.username;
+
+  if (parsed.action === 'approve') {
+    // Acknowledge fast — merge can take a second or two.
+    await interaction.deferReply();
+    const result = await approveAndMerge({
+      repo: parsed.repo,
+      prNumber: parsed.prNumber,
+      requestedBy: actorName,
+      auditActor: { id: interaction.user.id, username: interaction.user.username },
+    });
+    await interaction.editReply(result.message);
+    // Disable buttons after a successful merge so nobody double-clicks them.
+    if (result.success && interaction.message.editable) {
+      try {
+        await interaction.message.edit({ components: [] });
+      } catch (err) {
+        log.warn('Failed to clear PR action buttons after merge:', err);
+      }
+    }
+    return;
+  }
+
+  if (parsed.action === 'revise') {
+    // Open a modal so the user can type the requested change. Modals must be
+    // shown synchronously (no defer first).
+    const modal = new ModalBuilder()
+      .setCustomId(`pr:revise:${parsed.repo}:${parsed.prNumber}`)
+      .setTitle(`Request changes on PR #${parsed.prNumber}`);
+    const input = new TextInputBuilder()
+      .setCustomId('feedback')
+      .setLabel('What should Moomie change?')
+      .setStyle(TextInputStyle.Paragraph)
+      .setRequired(true)
+      .setMaxLength(2000);
+    modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
+    await interaction.showModal(modal);
+    return;
+  }
+}
+
+async function handlePRReviseModal(interaction: ModalSubmitInteraction): Promise<void> {
+  const parsed = parsePRCustomId(interaction.customId);
+  if (!parsed) return;
+
+  // Re-check the role here too — Discord delivers the modal submission
+  // separately from the button click, so we can't assume the earlier gate held.
+  const member = interaction.member;
+  const roles = member && 'roles' in member ? member.roles as GuildMemberRoleManager : undefined;
+  if (!memberHasApproverRole(roles)) {
+    await interaction.reply({
+      content: `You need the **${WEB_APPROVER_ROLE}** role to do that.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const feedback = interaction.fields.getTextInputValue('feedback').trim();
+  if (!feedback) {
+    await interaction.reply({ content: 'No feedback provided — nothing to do.', ephemeral: true });
+    return;
+  }
+
+  const actorName = interaction.member && 'displayName' in interaction.member
+    ? (interaction.member.displayName as string)
+    : interaction.user.username;
+
+  // Post the request as a PR comment so the GitHub side carries the trail.
+  // This intentionally does NOT include the @moomie-bot trigger token, since
+  // we drive the revision directly below — otherwise the webhook would fire
+  // a duplicate revision job.
+  try {
+    await commentOnPR(
+      parsed.repo,
+      parsed.prNumber,
+      `Revision requested via Discord by **${actorName}**:\n\n${feedback}`,
+    );
+  } catch (err) {
+    log.warn(`Failed to mirror Discord revision to ${GITHUB_OWNER}/${parsed.repo} PR #${parsed.prNumber}:`, err);
+  }
+
+  // Remember where to deliver the "revision complete" notification.
+  trackPR(parsed.prNumber, parsed.repo, {
+    channelId: interaction.channelId ?? '',
+    userId: interaction.user.id,
+    platform: 'discord',
+  });
+
+  // Kick off the revision and bridge its outcome back to this channel/thread.
+  // Without this notifier, the modal path would go silent on completion.
+  notifyOnRevisionComplete(
+    parsed.repo,
+    parsed.prNumber,
+    runRevisionTask({
+      repo: parsed.repo,
+      prNumber: parsed.prNumber,
+      feedback,
+      requestedBy: actorName,
+    }),
+  );
+
+  await interaction.reply({
+    content: `On it — applying the requested changes to PR #${parsed.prNumber}.`,
+  });
 }

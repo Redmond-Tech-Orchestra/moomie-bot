@@ -5,6 +5,7 @@ import type { Client } from 'discord.js';
 import { getTrackedIssue, untrackIssue } from './features/coding/issue-tracker.js';
 import { isOrgMember, listReviewComments } from './features/coding/github-client.js';
 import { runCodingTask, runRevisionTask, getQueueStatus } from './features/coding/job-runner.js';
+import { notifyOnRevisionComplete } from './features/coding/revision-notifier.js';
 import { startTeams } from './adapters/teams.js';
 import { getUploadsDir } from './features/website/attachment-store.js';
 import { initNotifications, notifyUser } from './adapters/index.js';
@@ -121,7 +122,7 @@ export function startServer(discordClient: Client): express.Express {
 
 // ─── Webhook Handlers ─────────────────────────────────────────────────────────
 
-async function handlePullRequest(pr: { body?: string; html_url: string }, repo?: string): Promise<void> {
+async function handlePullRequest(pr: { number: number; body?: string; html_url: string }, repo?: string): Promise<void> {
   const issueRefs = pr.body?.matchAll(/(?:closes|fixes|resolves)\s+#(\d+)/gi);
   if (!issueRefs) return;
 
@@ -136,7 +137,11 @@ async function handlePullRequest(pr: { body?: string; html_url: string }, repo?:
       const previewSuffix = repoName === GITHUB_REPO
         ? `\nProposed change: https://preview.redmondtechorchestra.org`
         : '';
-      await notifyUser(tracked, `PR is ready for issue #${issueNumber}: ${pr.html_url}${previewSuffix}`);
+      await notifyUser(
+        tracked,
+        `PR is ready for issue #${issueNumber}: ${pr.html_url}${previewSuffix}`,
+        { kind: 'pr-actions', repo: repoName, prNumber: pr.number },
+      );
       untrackIssue(issueNumber, repoName);
     } catch (err) {
       log.error(`Failed to notify user for issue #${issueNumber}:`, err);
@@ -204,10 +209,17 @@ async function handleIssueLabelAdded(
           const previewSuffix = repoName === GITHUB_REPO
             ? `\nProposed change: https://preview.redmondtechorchestra.org`
             : '';
-          await notifyUser(tracked, `PR ready for issue #${issue.number}: ${result.prUrl}${previewSuffix}`);
+          await notifyUser(
+            tracked,
+            `PR ready for issue #${issue.number}: ${result.prUrl}${previewSuffix}`,
+            result.prNumber ? { kind: 'pr-actions', repo: repoName, prNumber: result.prNumber } : undefined,
+          );
         } catch (err) {
           log.error(`Failed to notify user for PR on #${issue.number}:`, err);
         }
+        // Untrack so the `pull_request.opened` webhook (which also notifies as
+        // a fallback) doesn't send a duplicate "PR is ready" message.
+        untrackIssue(issue.number, repoName);
       }
     } else {
       log.error(`Agent failed for #${issue.number}: ${result.error}`);
@@ -285,12 +297,12 @@ async function handleIssueComment(payload: IssueCommentPayload): Promise<void> {
   if (!feedback) return;
 
   log.info(`Revising ${repo}/PR${payload.issue.number} from comment by ${sender.login}`);
-  void runRevisionTask({
+  notifyOnRevisionComplete(repo, payload.issue.number, runRevisionTask({
     repo,
     prNumber: payload.issue.number,
     feedback,
     requestedBy: sender.login,
-  });
+  }));
 }
 
 interface PullRequestReviewPayload {
@@ -347,10 +359,12 @@ async function handlePullRequestReview(payload: PullRequestReviewPayload): Promi
   const feedback = feedbackParts.join('\n\n');
 
   log.info(`Revising ${repo}/PR${payload.pull_request.number} from review by ${sender.login} (${inline.length} inline comments)`);
-  void runRevisionTask({
+  notifyOnRevisionComplete(repo, payload.pull_request.number, runRevisionTask({
     repo,
     prNumber: payload.pull_request.number,
     feedback,
     requestedBy: sender.login,
-  });
+  }));
 }
+
+

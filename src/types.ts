@@ -38,6 +38,13 @@ export interface CommandContext {
    * don't support components should fall back to text only.
    */
   followUp: (text: string, components?: unknown[]) => Promise<void>;
+  /**
+   * Start a thread off the current reply so all follow-up work (issue
+   * updates, PR notifications, revision results) can be grouped together.
+   * Returns the new thread's channel id, or `undefined` if threads are not
+   * supported in this context (DMs, Teams, etc).
+   */
+  startThread?: (name: string) => Promise<string | undefined>;
 }
 
 // Platform-agnostic command handler
