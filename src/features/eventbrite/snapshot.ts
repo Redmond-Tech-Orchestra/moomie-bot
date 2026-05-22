@@ -125,8 +125,12 @@ export async function snapshotEvent(eventId: string): Promise<SnapshotResult> {
   };
 
   // 1. Core event blob — needed first to get name + end_date for meta.
+  // Expansions are free (no extra HTTP call), so we pull everything that's
+  // useful for the archive: visual assets (logo), taxonomy (subcategory),
+  // refund context (refund_policy), and aggregate availability snapshot
+  // (ticket_availability) on top of the basics.
   const eventBlob = (await grab(
-    `/events/${eventId}/?expand=ticket_classes,venue,organizer,format,category,music_properties`,
+    `/events/${eventId}/?expand=ticket_classes,venue,organizer,format,category,music_properties,logo,subcategory,refund_policy,ticket_availability`,
     'event.json',
   )) as EventbriteEvent;
 
@@ -134,7 +138,12 @@ export async function snapshotEvent(eventId: string): Promise<SnapshotResult> {
   const [, , attendees, orders] = await Promise.all([
     grab(`/events/${eventId}/ticket_classes/`, 'ticket_classes.json'),
     grab(`/events/${eventId}/description/`, 'description.json'),
-    grabPaginated(`/events/${eventId}/attendees/?status=attending`, 'attendees', 'attendees.json'),
+    // Omit ?status= so we capture every attendee record (Attending,
+    // Checked In, Not Attending, Deleted). With the default "attending"
+    // filter, refunded/cancelled rows are silently dropped, which makes
+    // it impossible to reconcile registration vs check-in vs refund
+    // numbers from the frozen snapshot alone.
+    grabPaginated(`/events/${eventId}/attendees/`, 'attendees', 'attendees.json'),
     grabPaginated(`/events/${eventId}/orders/`, 'orders', 'orders.json'),
     grab(`/events/${eventId}/structured_content/`, 'structured_content.json', { optional: true }),
     grab(`/events/${eventId}/questions/`, 'questions.json', { optional: true }),

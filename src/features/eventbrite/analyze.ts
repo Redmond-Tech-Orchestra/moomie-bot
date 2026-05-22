@@ -64,13 +64,31 @@ Directory tree:
 - **event.json**: Raw Eventbrite event blob with expansions. Notable fields:
   \`id\`, \`name.text\`, \`start.utc\`, \`end.utc\`, \`url\`, \`venue\` (when
   expanded), \`organizer\`, \`ticket_classes\` (with \`quantity_sold\`,
-  \`quantity_total\`, \`cost.major_value\`).
+  \`quantity_total\`, \`cost.major_value\`), \`logo.url\` (event banner),
+  \`category\` and \`subcategory\`, \`music_properties\` (door_time,
+  presented_by, age_restriction), \`refund_policy\` (refund window/terms
+  — useful when reconciling refunded orders), and \`ticket_availability\`
+  (aggregate sales/availability snapshot across all ticket classes at
+  the time of sync).
 
 - **attendees.json**: Envelope \`{ source, retrieved_at, object_count, items: [...] }\`.
   Each attendee item has:
     - \`id\`, \`order_id\`, \`event_id\`, \`ticket_class_id\`, \`ticket_class_name\`
-    - \`status\` ('attending', 'not_attending', 'unpaid', ...)
-    - \`checked_in\` (boolean)
+    - \`status\` — Title-Case display string. Per Eventbrite's API blueprint
+      the field falls into one of two filter buckets:
+        * "attending" bucket: \`'Attending'\` (registered, not yet scanned)
+          or \`'Checked In'\` (scanned at the door).
+        * "not_attending" bucket: \`'Not Attending'\` or \`'Deleted'\`
+          (refunded, cancelled, or removed by the organizer).
+      The snapshot intentionally pulls **all** of these (no \`?status=\`
+      filter at fetch time) so the frozen archive is complete. Always
+      inspect distinct values before assuming — e.g.
+      \`Counter(a['status'] for a in items)\`.
+    - \`checked_in\` (boolean) — perfectly correlates with
+      \`status == 'Checked In'\`; prefer this field for
+      "actually showed up" checks.
+    - \`refunded\`, \`cancelled\` (booleans) — true for rows in the
+      not_attending bucket; false for active registrations.
     - \`profile\`: \`{ name, first_name, last_name, email, ... }\` — PII, handle carefully
     - \`costs\`: \`{ base_price.major_value, gross.major_value, eventbrite_fee.major_value, ... }\`
     - \`barcodes\`: list of \`{ barcode, status ('unused'|'used'|'refunded'|'unpaid'),
@@ -79,6 +97,27 @@ Directory tree:
     - \`answers\`: list of \`{ question, answer, type, question_id }\` for custom
       registration questions.
     - \`created\`, \`changed\`: ISO timestamps.
+
+  ## Counting attendance correctly (READ THIS)
+
+  The word "attendees" is ambiguous and routinely misleading. Always be
+  precise about which figure you mean:
+
+  - **Tickets issued / registered**: rows where
+    \`status in ('Attending', 'Checked In')\` — i.e. neither refunded nor
+    cancelled. This is what Eventbrite labels "attendees" in its
+    dashboard.
+  - **Actually attended (door scans)**: rows where \`checked_in == True\`
+    (equivalently \`status == 'Checked In'\`).
+  - **No-shows**: registered minus checked-in. Across our archive this is
+    typically ~half of registrants. When reporting attendance to humans,
+    surface both numbers (e.g. "1,201 registered, 912 checked in") rather
+    than picking one and calling it "attendees".
+  - **Refunded / cancelled**: rows where \`refunded == True\` or
+    \`cancelled == True\` (status \`'Not Attending'\` or \`'Deleted'\`).
+    Exclude these from any registration or revenue total.
+  - **Do NOT** filter by \`status == 'Attending'\` and call that the total —
+    that excludes the people who actually showed up (\`'Checked In'\`).
 
 - **orders.json**: Envelope \`{ ..., items: [...] }\`. Each order:
     - \`id\`, \`event_id\`, \`status\` ('placed', 'refunded', ...)
