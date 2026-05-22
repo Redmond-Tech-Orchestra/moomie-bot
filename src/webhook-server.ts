@@ -2,9 +2,10 @@ import crypto from 'node:crypto';
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import type { Client } from 'discord.js';
-import { getTrackedIssue, untrackIssue, getTrackedPR, untrackPR } from './features/coding/issue-tracker.js';
+import { getTrackedIssue, untrackIssue } from './features/coding/issue-tracker.js';
 import { isOrgMember, listReviewComments } from './features/coding/github-client.js';
 import { runCodingTask, runRevisionTask, getQueueStatus } from './features/coding/job-runner.js';
+import { notifyOnRevisionComplete } from './features/coding/revision-notifier.js';
 import { startTeams } from './adapters/teams.js';
 import { getUploadsDir } from './features/website/attachment-store.js';
 import { initNotifications, notifyUser } from './adapters/index.js';
@@ -366,38 +367,4 @@ async function handlePullRequestReview(payload: PullRequestReviewPayload): Promi
   }));
 }
 
-/**
- * Bridge a revision job's result back to the originating Discord channel (if
- * any). `runRevisionTask` always returns — even on failure — so we just need
- * to look up the tracker entry once it settles.
- */
-function notifyOnRevisionComplete(
-  repo: string,
-  prNumber: number,
-  job: ReturnType<typeof runRevisionTask>,
-): void {
-  job.then(async (result) => {
-    const tracked = getTrackedPR(prNumber, repo);
-    if (!tracked) return;
-    try {
-      if (result.success) {
-        await notifyUser(
-          tracked,
-          `Revision pushed to PR #${prNumber}: ${result.prUrl ?? ''}`.trim(),
-          { kind: 'pr-actions', repo, prNumber },
-        );
-      } else {
-        await notifyUser(
-          tracked,
-          `Couldn't revise PR #${prNumber}: ${result.error ?? 'unknown error'}`,
-        );
-      }
-    } catch (err) {
-      log.error(`Failed to notify user for revision on ${repo}/PR${prNumber}:`, err);
-    } finally {
-      untrackPR(prNumber, repo);
-    }
-  }).catch((err) => {
-    log.error(`Unexpected error in revision job for ${repo}/PR${prNumber}:`, err);
-  });
-}
+

@@ -18,7 +18,8 @@ import { commentOnPR } from '../features/coding/github-client.js';
 import { trackPR } from '../features/coding/issue-tracker.js';
 import { approveAndMerge } from '../features/coding/pr-actions.js';
 import { runRevisionTask } from '../features/coding/job-runner.js';
-import { GITHUB_OWNER, WEB_APPROVER_ROLE } from '../config.js';
+import { notifyOnRevisionComplete } from '../features/coding/revision-notifier.js';
+import { GITHUB_OWNER, GITHUB_REPO, GITHUB_BOT_REPO, WEB_APPROVER_ROLE } from '../config.js';
 import type { CommandContext } from '../types.js';
 import { createLogger } from '../logger.js';
 
@@ -316,25 +317,33 @@ export async function startDiscord(): Promise<void> {
 
 /**
  * Parse `pr:<action>:<repo>:<prNumber>` custom IDs. Returns null on malformed
- * input so the caller can ignore foreign buttons that happen to start with
- * `pr:`.
+ * input or on a repo outside our allow-list, so foreign or spoofed buttons
+ * are dropped before any GitHub call.
  */
+const ALLOWED_PR_REPOS = new Set([GITHUB_REPO, GITHUB_BOT_REPO]);
+
 function parsePRCustomId(customId: string): { action: string; repo: string; prNumber: number } | null {
   const parts = customId.split(':');
   if (parts.length !== 4 || parts[0] !== 'pr') return null;
   const prNumber = parseInt(parts[3], 10);
   if (!Number.isFinite(prNumber)) return null;
+  if (!ALLOWED_PR_REPOS.has(parts[2])) return null;
   return { action: parts[1], repo: parts[2], prNumber };
 }
 
 /**
- * Permission gate for PR-action buttons. The `WEB_APPROVER_ROLE` env var
- * can hold either a role name or a snowflake ID — we accept either, since
- * Discord role names are stable enough for an orchestra-sized server.
+ * Permission gate for PR-action buttons. `WEB_APPROVER_ROLE` may hold a role
+ * name OR a snowflake ID. The cached-member path (the common case) accepts
+ * either. The raw string[] fallback only carries role IDs, so it can only
+ * match when the env var is a snowflake.
  */
 function memberHasApproverRole(roles: GuildMemberRoleManager | string[] | undefined): boolean {
   if (!roles) return false;
-  if (Array.isArray(roles)) return roles.includes(WEB_APPROVER_ROLE);
+  if (Array.isArray(roles)) {
+    // Raw API path: array holds role IDs only. Names can't be compared here.
+    if (!/^\d+$/.test(WEB_APPROVER_ROLE)) return false;
+    return roles.includes(WEB_APPROVER_ROLE);
+  }
   return roles.cache.some((r) => r.id === WEB_APPROVER_ROLE || r.name === WEB_APPROVER_ROLE);
 }
 
@@ -364,6 +373,7 @@ async function handlePRButton(interaction: ButtonInteraction): Promise<void> {
       repo: parsed.repo,
       prNumber: parsed.prNumber,
       requestedBy: actorName,
+      auditActor: { id: interaction.user.id, username: interaction.user.username },
     });
     await interaction.editReply(result.message);
     // Disable buttons after a successful merge so nobody double-clicks them.
@@ -442,12 +452,18 @@ async function handlePRReviseModal(interaction: ModalSubmitInteraction): Promise
     platform: 'discord',
   });
 
-  void runRevisionTask({
-    repo: parsed.repo,
-    prNumber: parsed.prNumber,
-    feedback,
-    requestedBy: actorName,
-  });
+  // Kick off the revision and bridge its outcome back to this channel/thread.
+  // Without this notifier, the modal path would go silent on completion.
+  notifyOnRevisionComplete(
+    parsed.repo,
+    parsed.prNumber,
+    runRevisionTask({
+      repo: parsed.repo,
+      prNumber: parsed.prNumber,
+      feedback,
+      requestedBy: actorName,
+    }),
+  );
 
   await interaction.reply({
     content: `On it — applying the requested changes to PR #${parsed.prNumber}.`,

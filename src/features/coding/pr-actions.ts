@@ -12,8 +12,10 @@ const log = createLogger('PRActions');
 export interface ApproveAndMergeOptions {
   repo: string;
   prNumber: number;
-  /** Display name of whoever clicked the button in Discord, for audit trail. */
+  /** Display name (nickname) to surface in user-facing messages and the GitHub audit comment. */
   requestedBy: string;
+  /** Stable Discord identity for the audit log. Not spoofable via nickname. */
+  auditActor: { id: string; username: string };
 }
 
 export interface ApproveAndMergeResult {
@@ -32,9 +34,9 @@ export interface ApproveAndMergeResult {
  * letting GitHub's merge endpoint return a confusing 405.
  */
 export async function approveAndMerge(opts: ApproveAndMergeOptions): Promise<ApproveAndMergeResult> {
-  const { repo, prNumber, requestedBy } = opts;
+  const { repo, prNumber, requestedBy, auditActor } = opts;
 
-  const info = await getPullRequestMergeability(repo, prNumber);
+  let info = await getPullRequestMergeability(repo, prNumber);
   if (!info) {
     return { success: false, message: `Couldn't find PR #${prNumber} in ${repo}.` };
   }
@@ -45,8 +47,14 @@ export async function approveAndMerge(opts: ApproveAndMergeOptions): Promise<App
     return { success: false, message: `PR #${prNumber} is ${info.state}.` };
   }
 
-  // GitHub returns `mergeable: null` while it's still computing — caller can
-  // retry, but it's almost always ready within a few seconds of PR open.
+  // GitHub returns `mergeable: null` / `mergeable_state: 'unknown'` while it
+  // is still computing the merge. Give it one short retry before deciding.
+  if (info.mergeable === null || info.mergeableState === 'unknown') {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const retry = await getPullRequestMergeability(repo, prNumber);
+    if (retry) info = retry;
+  }
+
   if (info.mergeable === false) {
     return { success: false, message: `PR #${prNumber} has merge conflicts. Needs a rebase before it can ship.` };
   }
@@ -77,9 +85,11 @@ export async function approveAndMerge(opts: ApproveAndMergeOptions): Promise<App
 
   let sha: string;
   try {
+    // Don't override commit_message — let GitHub auto-fill the squash body
+    // from the PR description. The "merged via Discord" trail lives in the
+    // post-merge audit comment and the bot's audit log.
     sha = await mergePullRequest(repo, prNumber, {
       mergeMethod: 'squash',
-      commitMessage: `Merged via Discord by ${requestedBy}.`,
     });
   } catch (err) {
     log.error(`Failed to merge ${repo}/PR${prNumber}:`, err);
@@ -98,7 +108,7 @@ export async function approveAndMerge(opts: ApproveAndMergeOptions): Promise<App
 
   log.audit({
     type: 'pr_merge',
-    input_summary: `${repo}/PR${prNumber} merged by ${requestedBy} via Discord`,
+    input_summary: `${repo}/PR${prNumber} merged via Discord by ${auditActor.username} (id:${auditActor.id})`,
     result: sha,
   });
 
