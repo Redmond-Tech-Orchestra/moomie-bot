@@ -18,6 +18,8 @@ import {
 } from '../tracker/store.js';
 import { addReminder, parseReminder } from '../remind/scheduler.js';
 import { executeFeedback } from '../feedback/handle-command.js';
+import { syncArchive } from '../eventbrite/sync.js';
+import { getLiveSales } from '../eventbrite/live.js';
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('Chat');
@@ -136,6 +138,26 @@ export const toolDeclarations = [
       required: ['feedback'],
     },
   },
+  {
+    name: 'sync_eventbrite_archive',
+    description: 'Bring the local Eventbrite archive up to date. Lists all past org events, snapshots any that are missing or within the late-check-in window (24h after event end). Use when asked about past events to ensure data is available, or when the user explicitly asks to sync/refresh archives. Cheap if everything is already frozen. Returns a report of what was added/refreshed/skipped.',
+    parameters: {
+      type: 'object',
+      properties: {
+        force: { type: 'boolean', description: 'Re-snapshot every past event even if already frozen. Defaults to false.' },
+      },
+    },
+  },
+  {
+    name: 'get_eventbrite_live_sales',
+    description: 'Get current ticket sales for active (non-ended) Eventbrite events. Returns gross, net, attendee count, and per-ticket-class breakdown with remaining capacity. Cached for 60s. Use for questions about how an upcoming concert is selling.',
+    parameters: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'string', description: 'Eventbrite event ID. Omit to get all active events.' },
+      },
+    },
+  },
 ];
 
 // ─── Tool Execution ──────────────────────────────────────────────────────────
@@ -157,6 +179,8 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
     case 'list_channels': return listChannels(args);
     case 'create_reminder': return createReminderTool(args, ctx);
     case 'submit_feedback': return submitFeedbackTool(args, ctx);
+    case 'sync_eventbrite_archive': return syncEventbriteArchiveTool(args);
+    case 'get_eventbrite_live_sales': return getEventbriteLiveSalesTool(args);
     default: return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
 }
@@ -362,5 +386,25 @@ async function submitFeedbackTool(args: Record<string, unknown>, ctx: ToolCallCo
   } catch (err) {
     log.error('Feedback tool call failed:', err);
     return JSON.stringify({ error: 'Failed to submit feedback. Try /feedback instead.' });
+  }
+}
+
+async function syncEventbriteArchiveTool(args: Record<string, unknown>): Promise<string> {
+  try {
+    const report = await syncArchive({ force: args.force as boolean | undefined });
+    return JSON.stringify(report);
+  } catch (err) {
+    log.error('sync_eventbrite_archive failed:', err);
+    return JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+async function getEventbriteLiveSalesTool(args: Record<string, unknown>): Promise<string> {
+  try {
+    const results = await getLiveSales(args.event_id as string | undefined);
+    return JSON.stringify({ events: results });
+  } catch (err) {
+    log.error('get_eventbrite_live_sales failed:', err);
+    return JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
   }
 }
