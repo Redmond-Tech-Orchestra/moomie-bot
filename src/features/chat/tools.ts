@@ -20,6 +20,7 @@ import { addReminder, parseReminder } from '../remind/scheduler.js';
 import { executeFeedback } from '../feedback/handle-command.js';
 import { syncArchive } from '../eventbrite/sync.js';
 import { getLiveSales } from '../eventbrite/live.js';
+import { analyze as analyzeEventbrite } from '../eventbrite/analyze.js';
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('Chat');
@@ -158,6 +159,18 @@ export const toolDeclarations = [
       },
     },
   },
+  {
+    name: 'analyze_eventbrite',
+    description: 'Hand off a data-analysis question about the Eventbrite archive to a stronger model that will write and run Python (pandas/numpy) against the archived JSON. Use for questions that require joining/aggregating data across events, computing statistics, comparing campaigns, or anything beyond a simple lookup. Make sure the archive is up to date first via sync_eventbrite_archive. Returns the final answer plus the code that was run.',
+    parameters: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'The analytical question, in plain English.' },
+        context: { type: 'string', description: 'Optional extra context from the conversation that the analyst should know (e.g. specific event IDs or filters the user mentioned).' },
+      },
+      required: ['question'],
+    },
+  },
 ];
 
 // ─── Tool Execution ──────────────────────────────────────────────────────────
@@ -181,6 +194,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
     case 'submit_feedback': return submitFeedbackTool(args, ctx);
     case 'sync_eventbrite_archive': return syncEventbriteArchiveTool(args);
     case 'get_eventbrite_live_sales': return getEventbriteLiveSalesTool(args);
+    case 'analyze_eventbrite': return analyzeEventbriteTool(args);
     default: return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
 }
@@ -405,6 +419,37 @@ async function getEventbriteLiveSalesTool(args: Record<string, unknown>): Promis
     return JSON.stringify({ events: results });
   } catch (err) {
     log.error('get_eventbrite_live_sales failed:', err);
+    return JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+async function analyzeEventbriteTool(args: Record<string, unknown>): Promise<string> {
+  const question = args.question as string;
+  if (!question) return JSON.stringify({ error: 'question is required' });
+  const context = args.context as string | undefined;
+  try {
+    const result = await analyzeEventbrite(question, context);
+    return JSON.stringify({
+      answer: result.answer,
+      summary: result.summary,
+      iterations_used: result.iterations_used,
+      total_duration_ms: result.total_duration_ms,
+      // Surface the code that ran so the chat LLM (and audit log) can see exactly what was executed.
+      transcript: result.transcript.map((t) => ({
+        iteration: t.iteration,
+        reason: t.reason,
+        code: t.code,
+        exit_code: t.exit_code,
+        // Keep stdout/stderr in the response so the chat LLM can reason about evidence, capped via runner's maxBytes.
+        stdout: t.stdout,
+        stderr: t.stderr,
+        duration_ms: t.duration_ms,
+        timed_out: t.timed_out,
+      })),
+      error: result.error,
+    });
+  } catch (err) {
+    log.error('analyze_eventbrite failed:', err);
     return JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
   }
 }
