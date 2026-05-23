@@ -163,7 +163,36 @@ async function cloneOrPull(repo?: string): Promise<string> {
     git(['pull', '--rebase'], repoDir);
   }
 
+  // Pre-install npm deps so the agent doesn't burn its idle-timeout on a cold
+  // `npx tsc` install. Only runs when the repo has a package.json and there's
+  // no node_modules yet — once populated, the agent can manage incremental
+  // installs itself. Failures here are non-fatal: the agent can retry.
+  ensureNodeModules(repoDir);
+
   return repoDir;
+}
+
+function ensureNodeModules(repoDir: string): void {
+  if (!fs.existsSync(path.join(repoDir, 'package.json'))) return;
+  if (fs.existsSync(path.join(repoDir, 'node_modules'))) return;
+
+  const hasLockfile = fs.existsSync(path.join(repoDir, 'package-lock.json'));
+  const npmArgs = hasLockfile
+    ? ['ci', '--prefer-offline', '--no-audit', '--no-fund']
+    : ['install', '--prefer-offline', '--no-audit', '--no-fund'];
+
+  log.info(`Installing npm deps in ${path.basename(repoDir)} (npm ${npmArgs[0]})…`);
+  const start = Date.now();
+  try {
+    execFileSync('npm', npmArgs, {
+      cwd: repoDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, npm_config_progress: 'false' },
+    });
+    log.info(`npm ${npmArgs[0]} done in ${Math.round((Date.now() - start) / 1000)}s`);
+  } catch (err) {
+    log.warn(`npm ${npmArgs[0]} failed in ${path.basename(repoDir)} (agent will retry if needed):`, err);
+  }
 }
 
 /** Configure git credential for the repo so push/pull uses the given token. */
