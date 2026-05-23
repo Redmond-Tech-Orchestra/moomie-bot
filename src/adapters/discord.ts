@@ -1,5 +1,5 @@
 import { Client, GatewayIntentBits, Partials } from 'discord.js';
-import type { ChatInputCommandInteraction, TextChannel, ButtonInteraction, ModalSubmitInteraction, GuildMemberRoleManager } from 'discord.js';
+import type { ChatInputCommandInteraction, ButtonInteraction, ModalSubmitInteraction, GuildMemberRoleManager } from 'discord.js';
 import {
   ActionRowBuilder,
   AttachmentBuilder,
@@ -331,7 +331,9 @@ export async function startDiscord(): Promise<void> {
           userId: message.author.id,
           userName: message.member?.displayName ?? message.author.displayName ?? message.author.username,
           channelId: message.channelId,
-          channelName: (message.channel as TextChannel).name ?? 'DM',
+          channelName: message.channel.isDMBased()
+            ? 'DM'
+            : (('name' in message.channel && message.channel.name) || 'unknown'),
           content,
         }, onProgress);
       } catch (innerErr) {
