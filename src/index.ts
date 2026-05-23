@@ -4,6 +4,7 @@ import { startServer } from './webhook-server.js';
 import { warmupRepo, forceResetQueue } from './features/coding/job-runner.js';
 import { getDb } from './db.js';
 import { startLogPruning } from './logger.js';
+import { reapStaleSandboxes } from './features/sandbox/python-runner.js';
 
 // ─── Validate required env vars (secrets only — non-secrets have defaults in config.ts) ──
 const required = ['DISCORD_TOKEN', 'GITHUB_APP_PRIVATE_KEY_PATH'];
@@ -22,6 +23,16 @@ await startDiscord();
 startServer(client);
 warmupRepo();
 startLogPruning();
+
+// Reap any python sandbox tmpdirs left over from a prior crash (older than 1h).
+// Normal runs clean up in a `finally`; this only matters after SIGKILL / OOM.
+reapStaleSandboxes()
+  .then(({ reaped, bytesFreed }) => {
+    if (reaped > 0) {
+      console.log(`[Startup] Reaped ${reaped} stale python sandbox dirs (${(bytesFreed / 1024).toFixed(1)} KB)`);
+    }
+  })
+  .catch((err) => console.warn('[Startup] Sandbox reap failed:', err));
 
 console.log('Moomie bot is running.');
 

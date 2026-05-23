@@ -24,9 +24,9 @@
  */
 
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { extname, join } from 'node:path';
 
 export interface RunPythonOptions {
   /** Python source to execute. Passed via `-c`. */
@@ -37,6 +37,24 @@ export interface RunPythonOptions {
   maxBytes?: number;
   /** Additional environment variables to expose to the script (use sparingly). */
   env?: Record<string, string>;
+  /**
+   * If set, scan the working directory after the script exits and return any
+   * files whose extension matches. Used to surface CSV exports / chart PNGs
+   * authored by the script back to the caller before the tmpdir is destroyed.
+   */
+  collectFiles?: {
+    /** Lowercased extensions including the leading dot, e.g. ['.csv', '.png']. */
+    extensions: string[];
+    /** Max bytes per individual file. Defaults to 5 MB. Files larger than this are skipped. */
+    maxBytesPerFile?: number;
+    /** Max number of files returned. Defaults to 5. Extras are dropped. */
+    maxFiles?: number;
+  };
+}
+
+export interface CollectedFile {
+  name: string;
+  data: Buffer;
 }
 
 export interface RunPythonResult {
@@ -47,10 +65,18 @@ export interface RunPythonResult {
   timed_out: boolean;
   stdout_truncated: boolean;
   stderr_truncated: boolean;
+  /** Files matching `collectFiles.extensions` found in cwd after exit. */
+  files?: CollectedFile[];
 }
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_BYTES = 64 * 1024;
+const DEFAULT_COLLECT_MAX_BYTES_PER_FILE = 5 * 1024 * 1024;
+const DEFAULT_COLLECT_MAX_FILES = 5;
+
+const TMP_PREFIX = 'moomie-py-';
+/** Reap stale sandbox dirs older than this (1 hour). */
+const STALE_REAP_AGE_MS = 60 * 60 * 1000;
 
 /**
  * Build the minimal env passed to the child. Only PATH/HOME/locale + caller
@@ -63,6 +89,8 @@ function buildSandboxEnv(extra: Record<string, string> = {}): Record<string, str
     LC_ALL: process.env.LC_ALL ?? 'C.UTF-8',
     PYTHONIOENCODING: 'utf-8',
     PYTHONDONTWRITEBYTECODE: '1',
+    // Non-interactive matplotlib backend so scripts can savefig() without a display.
+    MPLBACKEND: 'Agg',
   };
   for (const [k, v] of Object.entries(extra)) {
     env[k] = v;
@@ -70,11 +98,61 @@ function buildSandboxEnv(extra: Record<string, string> = {}): Record<string, str
   return env;
 }
 
+/**
+ * Reap any `moomie-py-*` scratch dirs left over in $TMPDIR from prior process
+ * crashes (the normal path cleans up in a `finally`, but a SIGKILL or hard
+ * crash mid-run could leak). Safe to call at startup; fire-and-forget.
+ *
+ * Only removes dirs older than STALE_REAP_AGE_MS so an in-flight sibling
+ * runner is never touched.
+ */
+export async function reapStaleSandboxes(): Promise<{ reaped: number; bytesFreed: number }> {
+  const root = tmpdir();
+  let entries: string[];
+  try {
+    entries = await readdir(root);
+  } catch {
+    return { reaped: 0, bytesFreed: 0 };
+  }
+  const cutoff = Date.now() - STALE_REAP_AGE_MS;
+  let reaped = 0;
+  let bytesFreed = 0;
+  for (const name of entries) {
+    if (!name.startsWith(TMP_PREFIX)) continue;
+    const full = join(root, name);
+    try {
+      const st = await stat(full);
+      if (!st.isDirectory()) continue;
+      if (st.mtimeMs > cutoff) continue;
+      // Roughly account size before removal so we can log how much was freed.
+      bytesFreed += await dirSize(full).catch(() => 0);
+      await rm(full, { recursive: true, force: true });
+      reaped++;
+    } catch {
+      // ignore — best-effort
+    }
+  }
+  return { reaped, bytesFreed };
+}
+
+async function dirSize(dir: string): Promise<number> {
+  let total = 0;
+  const entries = await readdir(dir).catch(() => []);
+  for (const e of entries) {
+    const full = join(dir, e);
+    const st = await stat(full).catch(() => null);
+    if (!st) continue;
+    if (st.isFile()) total += st.size;
+    else if (st.isDirectory()) total += await dirSize(full);
+  }
+  return total;
+}
+
 export async function runPython(opts: RunPythonOptions): Promise<RunPythonResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
 
-  const cwd = await mkdtemp(join(tmpdir(), 'moomie-py-'));
+  const cwd = await mkdtemp(join(tmpdir(), TMP_PREFIX));
   const t0 = Date.now();
 
   try {
@@ -134,6 +212,10 @@ export async function runPython(opts: RunPythonOptions): Promise<RunPythonResult
       child.once('close', (code) => resolve(code));
     }).finally(() => clearTimeout(timer));
 
+    const files = opts.collectFiles
+      ? await collectFilesFromCwd(cwd, opts.collectFiles)
+      : undefined;
+
     return {
       exit_code: exitCode,
       stdout: Buffer.concat(stdoutChunks).toString('utf8'),
@@ -142,9 +224,42 @@ export async function runPython(opts: RunPythonOptions): Promise<RunPythonResult
       timed_out: timedOut,
       stdout_truncated: stdoutTruncated,
       stderr_truncated: stderrTruncated,
+      files,
     };
   } finally {
     // Best-effort cleanup of scratch dir.
     await rm(cwd, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+async function collectFilesFromCwd(
+  cwd: string,
+  opts: NonNullable<RunPythonOptions['collectFiles']>,
+): Promise<CollectedFile[]> {
+  const wantExts = new Set(opts.extensions.map((e) => e.toLowerCase()));
+  const maxBytes = opts.maxBytesPerFile ?? DEFAULT_COLLECT_MAX_BYTES_PER_FILE;
+  const maxFiles = opts.maxFiles ?? DEFAULT_COLLECT_MAX_FILES;
+
+  let entries: string[];
+  try {
+    entries = await readdir(cwd);
+  } catch {
+    return [];
+  }
+
+  const collected: CollectedFile[] = [];
+  for (const name of entries) {
+    if (collected.length >= maxFiles) break;
+    if (!wantExts.has(extname(name).toLowerCase())) continue;
+    const full = join(cwd, name);
+    try {
+      const st = await stat(full);
+      if (!st.isFile()) continue;
+      if (st.size > maxBytes) continue;
+      collected.push({ name, data: await readFile(full) });
+    } catch {
+      // entry vanished or unreadable; skip
+    }
+  }
+  return collected;
 }

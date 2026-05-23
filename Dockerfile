@@ -18,14 +18,16 @@ FROM mcr.microsoft.com/devcontainers/javascript-node:22
 RUN git config --system user.name "moomie-bot[bot]" \
  && git config --system user.email "moomie-bot[bot]@users.noreply.github.com"
 
-# Python + pandas/numpy for the analytics sandbox (eventbrite analyze tool).
+# Python + pandas/numpy/matplotlib for the analytics sandbox (eventbrite analyze tool).
 # These ship via apt to avoid pip and stay within the distro's tested versions.
-# Total added image weight: ~150 MB.
+# matplotlib lets the sandbox save chart PNGs that get attached to Discord replies.
+# Total added image weight: ~200 MB.
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       python3 \
       python3-pandas \
       python3-numpy \
+      python3-matplotlib \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -188,7 +188,7 @@ Directory tree:
 
 ## Environment you have
 
-- Python 3.12+ with pandas, numpy, json, glob, pathlib, datetime, decimal.
+- Python 3.12+ with pandas, numpy, matplotlib, json, glob, pathlib, datetime, decimal.
 - **No network access available.** Don't try to call URLs.
 - **No secrets in env.** \`os.environ\` only contains PATH, locale, and
   \`EVENTBRITE_DATA_DIR\`.
@@ -198,6 +198,42 @@ Directory tree:
 - Print results to **stdout**. Final answer should be plain text or JSON.
 - For tabular results, print as Markdown table or JSON.
 - Keep stdout under 64 KB (will be truncated otherwise).
+
+## File outputs (CSV exports, chart images)
+
+When the user asks for raw data, a download, or anything bigger than fits
+in a Discord message, write it as a file to the **current working
+directory** instead of dumping it to stdout. Same for charts when a
+visualization communicates the answer better than prose.
+
+**Never print ASCII bar charts, sparklines, or hand-drawn diagrams to
+stdout.** If a chart would help the answer, you MUST save it as a PNG
+in the cwd using matplotlib — not as printed text. Discord renders the
+PNG inline; an ASCII chart looks broken there.
+
+Chart example (save as PNG, do not print):
+\`\`\`
+import matplotlib.pyplot as plt
+ax = df.plot.bar(x='day', y='sold', figsize=(10, 4))
+ax.set_title('Daily ticket sales — Symphonic Fantasia')
+plt.tight_layout()
+plt.savefig('sales-symphonic-fantasia.png', dpi=150, bbox_inches='tight')
+plt.close()
+print('saved sales-symphonic-fantasia.png')
+\`\`\`
+
+Raw data export (save as CSV, do not dump the whole df to stdout):
+\`\`\`
+df.to_csv('attendees-2024.csv', index=False)
+print(f'saved attendees-2024.csv ({len(df)} rows)')
+\`\`\`
+
+Files matching \`*.csv\` and \`*.png\` in cwd are collected after each run
+and surfaced to the user as Discord attachments. Use descriptive,
+lowercase, hyphenated filenames (\`attendees-2024.csv\`, not \`out.csv\`).
+Keep each file under 5 MB. Caps: max 5 files per analysis. After
+saving, print a short confirmation line (e.g. \`saved chart.png\`) — don't
+repeat the data in the answer.
 `.trim();
 
 // ─── Pro function-call tools (what Pro can call inside the loop) ─────────────
@@ -236,6 +272,12 @@ const PRO_TOOL_DECLARATIONS = [
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
+export interface AnalyzeFile {
+  name: string;
+  data: Buffer;
+  from_iteration: number;
+}
+
 export interface AnalyzeResult {
   answer: string | null;
   summary: string | null;
@@ -248,9 +290,12 @@ export interface AnalyzeResult {
     exit_code?: number | null;
     duration_ms?: number;
     timed_out?: boolean;
+    files_produced?: string[];
   }>;
   iterations_used: number;
   total_duration_ms: number;
+  /** CSV/PNG artifacts written to the sandbox cwd, aggregated across iterations. */
+  files?: AnalyzeFile[];
   error?: string;
 }
 
@@ -273,16 +318,17 @@ export async function analyze(question: string, context?: string): Promise<Analy
   const contents: GeminiContent[] = [{ role: 'user', parts: [{ text: userMessage }] }];
 
   const transcript: AnalyzeResult['transcript'] = [];
+  const collectedFiles: AnalyzeFile[] = [];
 
   for (let iter = 1; iter <= MAX_ITERATIONS; iter++) {
     const response = await callGeminiPro(apiKey, systemPrompt, contents);
     if ('error' in response) {
-      return finishResult(t0, transcript, iter, null, null, `Gemini call failed: ${response.error}`);
+      return finishResult(t0, transcript, iter, null, null, collectedFiles, `Gemini call failed: ${response.error}`);
     }
 
     const parts = response.data.candidates?.[0]?.content?.parts;
     if (!parts || parts.length === 0) {
-      return finishResult(t0, transcript, iter, null, null, 'Gemini returned no parts');
+      return finishResult(t0, transcript, iter, null, null, collectedFiles, 'Gemini returned no parts');
     }
 
     contents.push({ role: 'model', parts });
@@ -292,13 +338,13 @@ export async function analyze(question: string, context?: string): Promise<Analy
     if (!fnCall) {
       // Pro returned plain text without calling a tool — treat as final answer.
       const text = (parts.find((p) => p.text)?.text as string) ?? '';
-      return finishResult(t0, transcript, iter, text || null, null);
+      return finishResult(t0, transcript, iter, text || null, null, collectedFiles);
     }
 
     if (fnCall.name === 'finalize') {
       const answer = (fnCall.args?.answer as string) ?? null;
       const summary = (fnCall.args?.summary as string) ?? null;
-      return finishResult(t0, transcript, iter, answer, summary);
+      return finishResult(t0, transcript, iter, answer, summary, collectedFiles);
     }
 
     if (fnCall.name === 'run_python_code') {
@@ -308,7 +354,15 @@ export async function analyze(question: string, context?: string): Promise<Analy
         code,
         timeoutMs: PYTHON_TIMEOUT_MS,
         env: { EVENTBRITE_DATA_DIR: dataDirAbs },
+        collectFiles: { extensions: ['.csv', '.png'] },
       });
+
+      const filesProduced: string[] = [];
+      for (const f of result.files ?? []) {
+        const finalName = uniqueFileName(f.name, collectedFiles);
+        collectedFiles.push({ name: finalName, data: f.data, from_iteration: iter });
+        filesProduced.push(finalName);
+      }
 
       transcript.push({
         iteration: iter,
@@ -319,10 +373,11 @@ export async function analyze(question: string, context?: string): Promise<Analy
         exit_code: result.exit_code,
         duration_ms: result.duration_ms,
         timed_out: result.timed_out,
+        files_produced: filesProduced.length ? filesProduced : undefined,
       });
 
       log.info(
-        `iter=${iter} code=${code.length}b exit=${result.exit_code} dur=${result.duration_ms}ms stdout=${result.stdout.length}b stderr=${result.stderr.length}b${result.timed_out ? ' TIMED_OUT' : ''}`,
+        `iter=${iter} code=${code.length}b exit=${result.exit_code} dur=${result.duration_ms}ms stdout=${result.stdout.length}b stderr=${result.stderr.length}b files=${filesProduced.length}${result.timed_out ? ' TIMED_OUT' : ''}`,
       );
 
       // Feed the result back as the function response.
@@ -340,6 +395,7 @@ export async function analyze(question: string, context?: string): Promise<Analy
                 timed_out: result.timed_out,
                 stdout_truncated: result.stdout_truncated,
                 stderr_truncated: result.stderr_truncated,
+                files_produced: filesProduced,
               },
             },
           },
@@ -362,7 +418,7 @@ export async function analyze(question: string, context?: string): Promise<Analy
     });
   }
 
-  return finishResult(t0, transcript, MAX_ITERATIONS, null, null, `Hit max iterations (${MAX_ITERATIONS}) without finalizing`);
+  return finishResult(t0, transcript, MAX_ITERATIONS, null, null, collectedFiles, `Hit max iterations (${MAX_ITERATIONS}) without finalizing`);
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -381,7 +437,11 @@ A user has asked a question that requires analysis over the archive on disk. You
 Iterate as needed (up to ${MAX_ITERATIONS} iterations): write code, observe stdout/stderr, refine.
 When you have enough to answer, call finalize.
 
-Be concise. Don't print enormous dataframes; aggregate first. Always print results to stdout (no figures/files).
+Be concise. Don't print enormous dataframes; aggregate first. For raw data
+the user can take away, write a CSV file to the current directory rather
+than dumping to stdout. **If a chart is needed, save it as a PNG with
+matplotlib — NEVER print an ASCII bar chart, sparkline, or text-art
+diagram.** Files written to cwd are auto-attached to the reply.
 
 ${SCHEMA_DOC}`;
 }
@@ -442,6 +502,7 @@ function finishResult(
   iterations: number,
   answer: string | null,
   summary: string | null,
+  files: AnalyzeFile[],
   error?: string,
 ): AnalyzeResult {
   return {
@@ -450,8 +511,21 @@ function finishResult(
     transcript,
     iterations_used: iterations,
     total_duration_ms: Date.now() - t0,
+    files: files.length ? files : undefined,
     error,
   };
+}
+
+function uniqueFileName(name: string, existing: AnalyzeFile[]): string {
+  if (!existing.some((e) => e.name === name)) return name;
+  const dot = name.lastIndexOf('.');
+  const base = dot >= 0 ? name.slice(0, dot) : name;
+  const ext = dot >= 0 ? name.slice(dot) : '';
+  for (let i = 2; i < 1000; i++) {
+    const candidate = `${base}-${i}${ext}`;
+    if (!existing.some((e) => e.name === candidate)) return candidate;
+  }
+  return `${base}-${Date.now()}${ext}`;
 }
 
 function errorResult(t0: number, error: string): AnalyzeResult {
