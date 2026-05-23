@@ -175,10 +175,19 @@ export const toolDeclarations = [
 
 // ─── Tool Execution ──────────────────────────────────────────────────────────
 
+/** Binary attachment a tool wants to surface back through the chat reply. */
+export interface ChatFile {
+  name: string;
+  data: Buffer;
+  description?: string;
+}
+
 interface ToolCallContext {
   userId: string;
   channelId: string;
   userName: string;
+  /** Mutable per-request collector; tools push attachments here. */
+  files: ChatFile[];
 }
 
 export async function executeTool(name: string, args: Record<string, unknown>, ctx: ToolCallContext): Promise<string> {
@@ -194,7 +203,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
     case 'submit_feedback': return submitFeedbackTool(args, ctx);
     case 'sync_eventbrite_archive': return syncEventbriteArchiveTool(args);
     case 'get_eventbrite_live_sales': return getEventbriteLiveSalesTool(args);
-    case 'analyze_eventbrite': return analyzeEventbriteTool(args);
+    case 'analyze_eventbrite': return analyzeEventbriteTool(args, ctx);
     default: return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
 }
@@ -423,17 +432,25 @@ async function getEventbriteLiveSalesTool(args: Record<string, unknown>): Promis
   }
 }
 
-async function analyzeEventbriteTool(args: Record<string, unknown>): Promise<string> {
+async function analyzeEventbriteTool(args: Record<string, unknown>, ctx: ToolCallContext): Promise<string> {
   const question = args.question as string;
   if (!question) return JSON.stringify({ error: 'question is required' });
   const context = args.context as string | undefined;
   try {
     const result = await analyzeEventbrite(question, context);
+    // Surface any artifacts (CSV exports, chart PNGs) up to the chat layer so
+    // they get attached to the Discord reply.
+    const filesProduced: string[] = [];
+    for (const f of result.files ?? []) {
+      ctx.files.push({ name: f.name, data: f.data });
+      filesProduced.push(f.name);
+    }
     return JSON.stringify({
       answer: result.answer,
       summary: result.summary,
       iterations_used: result.iterations_used,
       total_duration_ms: result.total_duration_ms,
+      files_attached: filesProduced.length ? filesProduced : undefined,
       // Surface the code that ran so the chat LLM (and audit log) can see exactly what was executed.
       transcript: result.transcript.map((t) => ({
         iteration: t.iteration,
@@ -445,6 +462,7 @@ async function analyzeEventbriteTool(args: Record<string, unknown>): Promise<str
         stderr: t.stderr,
         duration_ms: t.duration_ms,
         timed_out: t.timed_out,
+        files_produced: t.files_produced,
       })),
       error: result.error,
     });
