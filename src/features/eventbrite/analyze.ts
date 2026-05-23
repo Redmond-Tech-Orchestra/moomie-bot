@@ -138,6 +138,17 @@ Directory tree:
     → numerator \`status == 'Attending'\` (post-event), denominator
     registered set.
 
+  ### Distinguishing ticket classes
+
+  Ticket names are NOT guaranteed to be unique within an event. For example,
+  an event may have multiple classes named "ADA Seating" with different
+  prices (e.g. one free, one $10).
+
+  - **Always group by \`ticket_class_id\`** (or a combination of name and price)
+    rather than just \`ticket_class_name\` to avoid collapsing distinct tiers.
+  - When presenting a breakdown, include the price (from \`costs\`) if the
+    names are identical or if it's relevant to the question.
+
   ### Don't relabel columns in output
 
   When presenting tabular results, keep the raw column names and status
@@ -155,7 +166,7 @@ Directory tree:
     - \`attendees\`: list of attendee IDs in this order
     - \`time_remaining\`, \`created\`, \`changed\`.
 
-- **ticket_classes.json**: Array of ticket-type definitions with prices
+- **ticket_classes.json**: Array of ticket-type definitions with \`id\`, names, prices
   (\`cost.display\`, \`cost.major_value\`), \`quantity_total\`, \`quantity_sold\`.
 
 - **reports/sales.json**: Aggregated revenue. Top-level summary has
