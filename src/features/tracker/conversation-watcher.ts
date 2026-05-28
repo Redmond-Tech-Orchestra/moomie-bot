@@ -751,17 +751,24 @@ async function dismissExtraction(pending: PendingExtraction, _client: Client): P
 }
 
 async function handleReply(pending: PendingExtraction, reply: Message, _client: Client): Promise<void> {
-  // For now, treat any reply as acknowledgment — user can correct inline
-  // Future: parse corrections like "1 is for fall concert", "2 yes that's me"
   const content = reply.content.toLowerCase().trim();
 
-  if (content === 'dismiss' || content === 'cancel' || content === 'no') {
+  // Explicit dismissal
+  if (content === 'dismiss' || content === 'cancel' || content === 'no' || content === 'nope') {
     await dismissExtraction(pending, _client);
     return;
   }
 
-  // Otherwise treat as confirmation
-  await confirmExtraction(pending, _client);
+  // Explicit confirmation
+  const isPositive = /^(yes|y|confirm|looks good|ok|okay|approve|sounds good)/i.test(content);
+  if (isPositive) {
+    await confirmExtraction(pending, _client);
+    return;
+  }
+
+  // If the reply doesn't look like an explicit confirmation, treat it as a dismissal/correction.
+  // This avoids auto-confirming when a user is actually trying to correct or reject an item.
+  await dismissExtraction(pending, _client);
 }
 
 async function autoResolve(messageId: string): Promise<void> {

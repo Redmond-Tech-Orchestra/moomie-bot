@@ -19,6 +19,13 @@ Extract CONCRETE action items that someone needs to DO. Focus on quality over qu
 
 Discord channels often have multiple conversations happening at once. Use reply references (lines starting with `[reply to Author]`) and topical context to separate threads before analyzing. Don't blend context from unrelated threads — an offer to help in one thread is not ownership of a task in another.
 
+### Forwarded Content & Historical Context
+
+Users often copy-paste emails or "CC" the channel for awareness (e.g., forwarding a reply they already sent to an external partner).
+- Do NOT extract action items from forwarded emails or historical logs if they appear to be shared for informational purposes only.
+- If the forwarded content contains questions that have already been answered in the same message, do not extract them as pending.
+- Only extract if the user explicitly asks for follow-up on the forwarded content (e.g., "See below, we still need someone to own the A/V setup").
+
 ### Ownership Attribution
 
 Attribution follows commitment, not mention. If person A raises a topic and person B offers to handle it, B is the owner. Read the full conversation before deciding who owns what — the last person to claim an action is the owner, regardless of who brought it up.
@@ -51,6 +58,7 @@ DONE items — only significant completions worth recording:
 - Contingency plans or routine follow-ups of a task — "do X, and if Y then Z, then update the team" is ONE item: "do X"
 - A goal AND its method as separate items — "check HS calendar" + "ask Joshua about dates" = ONE item
 - The same collaborative task listed per person — "A works with B on posters" is one item, not two
+- Informational CCs — forwarded emails or messages shared just to keep the team "in the loop" without a request for action
 - Vague intentions, brainstorming, social chat, agreements without action
 - "I'll use X as reference" — that's not a trackable action
 - Things that are clearly already done in the conversation (unless they're significant completions)
