@@ -12,6 +12,85 @@ const log = createLogger('Website');
 export const name = 'website';
 export const description = 'Create a website issue and have Moomie work on it';
 
+export interface WebsiteUpdateOptions {
+  task: string;
+  attachments?: { name: string; url: string }[];
+  platform: string;
+  userId: string;
+  userName: string;
+  channelId: string;
+  conversationRef?: any;
+  /** Callback to start a thread if possible */
+  startThread?: (title: string) => Promise<string | undefined>;
+}
+
+export async function executeWebsiteUpdate(opts: WebsiteUpdateOptions): Promise<{ issueUrl: string; threadId?: string }> {
+  const { task, attachments, platform, userId, userName, channelId, conversationRef, startThread } = opts;
+
+  // Save attachments locally if provided as URLs
+  const uploadedFiles: { name: string; fileName: string }[] = [];
+  if (attachments && attachments.length > 0) {
+    for (const file of attachments) {
+      try {
+        const { fileName } = await saveAttachment(file);
+        uploadedFiles.push({ name: file.name, fileName });
+      } catch (err) {
+        log.error(`Failed to save attachment ${file.name}:`, err);
+      }
+    }
+  }
+
+  // Build issue body
+  let body = `Requested via ${platform} by **${userName}**\n\n${task}`;
+  if (uploadedFiles.length > 0) {
+    body += '\n\n### Attachments\n';
+    body += '\nThese files are available in `.github/issue-assets/` in the workspace:\n';
+    for (const file of uploadedFiles) {
+      body += `\n- \`${file.fileName}\` (original: ${file.name})`;
+    }
+  }
+
+  // Generate a concise issue title via AI
+  const title = await generateIssueTitle(task);
+
+  // Create tracking issue
+  const issue = await createIssue({
+    title,
+    body,
+  });
+
+  // Try to spin up a thread
+  const threadId = startThread
+    ? await startThread(`#${issue.number}: ${title}`)
+    : undefined;
+  const trackingChannelId = threadId ?? channelId;
+
+  trackIssue(issue.number, GITHUB_REPO, {
+    channelId: trackingChannelId,
+    userId: userId,
+    platform: platform as any,
+    conversationRef: conversationRef,
+  });
+
+  // Kickoff message in thread
+  if (threadId) {
+    try {
+      await notifyUser(
+        {
+          platform: 'discord',
+          channelId: threadId,
+          userId: userId,
+        },
+        `Working on this now — I'll post here when the PR is ready.\nIssue: ${issue.html_url}`,
+      );
+    } catch (err) {
+      log.warn(`Failed to post kickoff message in thread ${threadId}:`, err);
+    }
+  }
+
+  return { issueUrl: issue.html_url, threadId };
+}
+
 export async function execute(ctx: CommandContext, args: string): Promise<void> {
   if (!args) {
     await ctx.reply('Please include a task description.');
@@ -21,74 +100,21 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
   await ctx.deferReply();
 
   try {
-    // Save attachments locally
-    const uploadedFiles: { name: string; fileName: string }[] = [];
-    if (ctx.attachments && ctx.attachments.length > 0) {
-      for (const file of ctx.attachments) {
-        try {
-          const { fileName } = await saveAttachment(file);
-          uploadedFiles.push({ name: file.name, fileName });
-        } catch (err) {
-          log.error(`Failed to save attachment ${file.name}:`, err);
-        }
-      }
-    }
-
-    // Build issue body
-    let body = `Requested via ${ctx.platform} by **${ctx.userName}**\n\n${args}`;
-    if (uploadedFiles.length > 0) {
-      body += '\n\n### Attachments\n';
-      body += '\nThese files are available in `.github/issue-assets/` in the workspace:\n';
-      for (const file of uploadedFiles) {
-        body += `\n- \`${file.fileName}\` (original: ${file.name})`;
-      }
-    }
-
-    // Generate a concise issue title via AI
-    const title = await generateIssueTitle(args);
-
-    // Create tracking issue
-    const issue = await createIssue({
-      title,
-      body,
-    });
-
-    // Try to spin up a thread so the entire trail of work (issue update, PR
-    // ready, PR revisions) stays in one place. Fall back to the parent
-    // channel if threads aren't available here (DMs, Teams, etc).
-    const threadId = ctx.startThread
-      ? await ctx.startThread(`#${issue.number}: ${title}`)
-      : undefined;
-    const trackingChannelId = threadId ?? ctx.channelId;
-
-    trackIssue(issue.number, GITHUB_REPO, {
-      channelId: trackingChannelId,
-      userId: ctx.userId,
+    const { issueUrl, threadId } = await executeWebsiteUpdate({
+      task: args,
+      attachments: ctx.attachments,
       platform: ctx.platform,
+      userId: ctx.userId,
+      userName: ctx.userName,
+      channelId: ctx.channelId,
       conversationRef: ctx.conversationRef,
+      startThread: ctx.startThread,
     });
 
     const summary = threadId
-      ? `Issue created: ${issue.html_url}\nFollow along in the thread — Moomie will post updates there.`
-      : `Issue created: ${issue.html_url}\nMoomie will start working on it shortly.`;
+      ? `Issue created: ${issueUrl}\nFollow along in the thread — Moomie will post updates there.`
+      : `Issue created: ${issueUrl}\nMoomie will start working on it shortly.`;
     await ctx.editReply(summary);
-
-    // Drop the kickoff message into the thread itself so the trail starts
-    // there, not in the parent channel.
-    if (threadId) {
-      try {
-        await notifyUser(
-          {
-            platform: 'discord',
-            channelId: threadId,
-            userId: ctx.userId,
-          },
-          `Working on this now — I'll post here when the PR is ready.\nIssue: ${issue.html_url}`,
-        );
-      } catch (err) {
-        log.warn(`Failed to post kickoff message in thread ${threadId}:`, err);
-      }
-    }
   } catch (err) {
     log.error('Failed to create issue:', err);
     await ctx.editReply('Something went wrong creating the issue. Check the logs.');

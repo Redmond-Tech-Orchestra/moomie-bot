@@ -21,6 +21,7 @@ import { executeFeedback } from '../feedback/handle-command.js';
 import { syncArchive } from '../eventbrite/sync.js';
 import { getLiveSales } from '../eventbrite/live.js';
 import { analyze as analyzeEventbrite } from '../eventbrite/analyze.js';
+import { executeWebsiteUpdate } from '../website/handle-command.js';
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('Chat');
@@ -128,6 +129,17 @@ export const toolDeclarations = [
     },
   },
   {
+    name: 'request_website_update',
+    description: 'Request a change or update to the orchestra website. Use this for adding content, fixing typos, updating concert descriptions, or any other website-related task. Moomie will create a GitHub issue and start working on it automatically.',
+    parameters: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: 'Clear description of the website change needed.' },
+      },
+      required: ['task'],
+    },
+  },
+  {
     name: 'submit_feedback',
     description: 'Submit feedback about something Moomie did wrong. Use this when a user says Moomie made a mistake, gave a wrong answer, misunderstood something, or needs to be corrected. Moomie will file a GitHub issue and attempt to self-patch. Include the message being corrected if the user is replying to one.',
     parameters: {
@@ -200,6 +212,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
     case 'read_channel_messages': return readChannelMessages(args);
     case 'list_channels': return listChannels(args);
     case 'create_reminder': return createReminderTool(args, ctx);
+    case 'request_website_update': return requestWebsiteUpdateTool(args, ctx);
     case 'submit_feedback': return submitFeedbackTool(args, ctx);
     case 'sync_eventbrite_archive': return syncEventbriteArchiveTool(args);
     case 'get_eventbrite_live_sales': return getEventbriteLiveSalesTool(args);
@@ -469,5 +482,45 @@ async function analyzeEventbriteTool(args: Record<string, unknown>, ctx: ToolCal
   } catch (err) {
     log.error('analyze_eventbrite failed:', err);
     return JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+async function requestWebsiteUpdateTool(args: Record<string, unknown>, ctx: ToolCallContext): Promise<string> {
+  const task = args.task as string;
+  if (!task) return JSON.stringify({ error: 'task is required' });
+
+  try {
+    const guild = client.guilds.cache.get(DISCORD_GUILD_ID);
+    const channel = guild?.channels.cache.get(ctx.channelId);
+
+    const startThread = async (title: string) => {
+      if (channel?.type === ChannelType.GuildText) {
+        const thread = await (channel as TextChannel).threads.create({
+          name: title.slice(0, 100),
+          autoArchiveDuration: 1440,
+        });
+        return thread.id;
+      }
+      return undefined;
+    };
+
+    const { issueUrl, threadId } = await (executeWebsiteUpdate as any)({
+      task,
+      platform: 'discord',
+      userId: ctx.userId,
+      userName: ctx.userName,
+      channelId: ctx.channelId,
+      startThread,
+    });
+
+    return JSON.stringify({
+      success: true,
+      issue_url: issueUrl,
+      thread_id: threadId,
+      message: `Website update requested. Issue: ${issueUrl}${threadId ? ` (Thread: <#${threadId}>)` : ''}`,
+    });
+  } catch (err) {
+    log.error('request_website_update failed:', err);
+    return JSON.stringify({ error: 'Failed to request website update.' });
   }
 }
