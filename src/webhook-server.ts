@@ -8,7 +8,7 @@ import { runCodingTask, runRevisionTask, getQueueStatus, setDraining } from './f
 import { notifyOnRevisionComplete } from './features/coding/revision-notifier.js';
 import { startTeams } from './adapters/teams.js';
 import { getUploadsDir } from './features/website/attachment-store.js';
-import { initNotifications, notifyUser } from './adapters/index.js';
+import { initNotifications, initActivity, notifyUser } from './adapters/index.js';
 import { mountMcp } from './features/admin/mcp-server.js';
 import { PORT, GITHUB_REPO } from './config.js';
 import { createLogger } from './logger.js';
@@ -24,6 +24,7 @@ export function startServer(discordClient: Client): express.Express {
 
   // Initialize the shared notification service
   initNotifications(discordClient);
+  initActivity(discordClient);
 
   // Serve uploaded attachments
   app.use('/uploads', express.static(getUploadsDir()));
@@ -202,9 +203,11 @@ async function handleIssueLabelAdded(
 
   log.info(`Label "${TRIGGER_LABEL}" added to #${issue.number} by ${sender.login}`);
 
-  // Notify initiator if tracked
+  // Notify initiator if tracked. Discord-tracked jobs get a single live status
+  // message from the job-runner (ack → work → done), so skip the textual
+  // kickoff for them; other platforms (Teams) still get the heads-up here.
   const tracked = getTrackedIssue(issue.number, repoName);
-  if (tracked) {
+  if (tracked && tracked.platform !== 'discord') {
     try {
       await notifyUser(tracked, `Moomie is working on issue #${issue.number}: ${issue.html_url}`);
     } catch (err) {
@@ -233,17 +236,21 @@ async function handleIssueLabelAdded(
     if (result.success) {
       log.info(`PR created for #${issue.number}: ${result.prUrl}`);
       if (tracked) {
-        try {
-          const previewSuffix = repoName === GITHUB_REPO
-            ? `\nProposed change: https://preview.redmondtechorchestra.org`
-            : '';
-          await notifyUser(
-            tracked,
-            `PR ready for issue #${issue.number}: ${result.prUrl}${previewSuffix}`,
-            result.prNumber ? { kind: 'pr-actions', repo: repoName, prNumber: result.prNumber } : undefined,
-          );
-        } catch (err) {
-          log.error(`Failed to notify user for PR on #${issue.number}:`, err);
+        // The job-runner's live Discord message already delivered the result;
+        // only post a textual completion when it didn't (Teams, post failure).
+        if (!result.deliveredToUser) {
+          try {
+            const previewSuffix = repoName === GITHUB_REPO
+              ? `\nProposed change: https://preview.redmondtechorchestra.org`
+              : '';
+            await notifyUser(
+              tracked,
+              `PR ready for issue #${issue.number}: ${result.prUrl}${previewSuffix}`,
+              result.prNumber ? { kind: 'pr-actions', repo: repoName, prNumber: result.prNumber } : undefined,
+            );
+          } catch (err) {
+            log.error(`Failed to notify user for PR on #${issue.number}:`, err);
+          }
         }
         // Untrack so the `pull_request.opened` webhook (which also notifies as
         // a fallback) doesn't send a duplicate "PR is ready" message.
@@ -251,7 +258,7 @@ async function handleIssueLabelAdded(
       }
     } else {
       log.error(`Agent failed for #${issue.number}: ${result.error}`);
-      if (tracked) {
+      if (tracked && !result.deliveredToUser) {
         try {
           await notifyUser(tracked, `Agent couldn't complete #${issue.number}: ${result.error}`);
         } catch (err) {

@@ -22,6 +22,25 @@ export interface AgentResult {
   error?: string;
 }
 
+/**
+ * A single mid-run progress signal extracted from the agent's transcript.
+ * Lets callers surface "what the agent is thinking/doing" while it works,
+ * instead of only seeing the final result.
+ */
+export interface CodingProgress {
+  /** Short one-line headline (a thought subject or a tool-call title). */
+  headline: string;
+  /** Optional longer detail (e.g. a thought description). */
+  detail?: string;
+  /** Tool name, when the step is a tool call. */
+  toolName?: string;
+  /** Milliseconds elapsed since the agent run started. */
+  elapsedMs: number;
+}
+
+/** Optional callback invoked as the agent makes progress during a run. */
+export type ProgressCallback = (progress: CodingProgress) => void;
+
 export interface CodingAgent {
   /** Human-readable name for logging */
   name: string;
@@ -29,6 +48,10 @@ export interface CodingAgent {
    * Execute a coding task in the given working directory.
    * The agent should read files, make changes, and write them back to disk.
    * It should NOT commit or push.
+   *
+   * `onProgress` (optional) is called as the agent works, so callers can relay
+   * intermediate thinking/steps to the user. Agents that can't introspect their
+   * own progress may ignore it.
    */
-  execute(task: AgentTask, workingDir: string): Promise<AgentResult>;
+  execute(task: AgentTask, workingDir: string, onProgress?: ProgressCallback): Promise<AgentResult>;
 }
