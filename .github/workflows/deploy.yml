@@ -18,4 +18,4 @@ jobs:
             cd /opt/moomie-bot
             git fetch origin main
             git reset --hard origin/main
-            docker compose up -d --build
+            bash scripts/safe-deploy.sh

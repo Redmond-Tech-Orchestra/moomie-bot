@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { startDiscord, client } from './adapters/discord.js';
 import { startServer } from './webhook-server.js';
-import { warmupRepo, forceResetQueue } from './features/coding/job-runner.js';
+import { warmupRepo, forceResetQueue, recoverJobs } from './features/coding/job-runner.js';
 import { getDb } from './db.js';
 import { startLogPruning } from './logger.js';
 import { reapStaleSandboxes } from './features/sandbox/python-runner.js';
@@ -22,6 +22,10 @@ if (!process.env.GITHUB_WEBHOOK_SECRET) {
 await startDiscord();
 startServer(client);
 warmupRepo();
+// Re-enqueue coding jobs that were queued or running when we last stopped
+// (deploy/crash). Runs after warmupRepo so the agent workspace is ready; the
+// queue itself waits on warmup before executing anything.
+recoverJobs();
 startLogPruning();
 
 // Reap any python sandbox tmpdirs left over from a prior crash (older than 1h).
