@@ -188,7 +188,7 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
       try {
         await notifyUser(
           { platform: 'discord', channelId: threadId, userId: ctx.userId },
-          `Looking into this now. I'll post the PR here when I'm done.\nIssue: ${issueUrl}`,
+          `📋 Issue created: ${issueUrl}\nLooking into this now — I'll post the PR here when I'm done, and you can reply in this thread to ask for changes.`,
         );
       } catch (err) {
         log.warn(`Failed to post kickoff message in feedback thread ${threadId}:`, err);

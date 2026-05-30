@@ -2,7 +2,7 @@ import type { CodingAgent } from './agent-types.js';
 import { GeminiAgent } from './gemini-cli.js';
 import { CODING_AGENT } from '../../../config.js';
 
-export type { CodingAgent, AgentTask, AgentResult } from './agent-types.js';
+export type { CodingAgent, AgentTask, AgentResult, CodingProgress, ProgressCallback } from './agent-types.js';
 
 /**
  * Returns the configured coding agent.

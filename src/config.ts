@@ -12,6 +12,11 @@ export const DISCORD_GUILD_ID = process.env.DISCORD_GUILD_ID || '119873995145871
 export const PERFORMANCES_CATEGORY_ID = process.env.PERFORMANCES_CATEGORY_ID || '1314829117249687574';
 export const ARCHIVED_CATEGORY_ID = process.env.ARCHIVED_CATEGORY_ID || '1314827819175378994';
 
+// Dedicated text channel where Moomie opens a per-job thread to stream her live
+// "thinking" trail. Leave empty to fall back to an inline trail in the origin
+// surface (also used automatically for DM-originated jobs).
+export const THINKING_CHANNEL_ID = process.env.THINKING_CHANNEL_ID || '1510218806146891876';
+
 // GitHub
 export const GITHUB_OWNER = process.env.GITHUB_OWNER || 'Redmond-Tech-Orchestra';
 export const GITHUB_REPO = process.env.GITHUB_REPO || 'redmond-tech-orchestra.github.io';

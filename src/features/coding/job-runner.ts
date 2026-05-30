@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getOctokit, getInstallationToken, getPullRequest, commentOnPR } from './github-client.js';
+import { getOctokit, getInstallationToken, getPullRequest } from './github-client.js';
 import { getAgent } from './agents/index.js';
 import type { AgentResult } from './agents/index.js';
 import { copyToWorkspace, deleteUploads } from '../website/attachment-store.js';
@@ -14,7 +14,10 @@ import {
   getResumableJobs,
   pruneFinishedJobs,
 } from './job-store.js';
+import { getTrackedIssue, untrackIssue, getTrackedPR, untrackPR } from './issue-tracker.js';
 import { notifyOnRevisionComplete } from './revision-notifier.js';
+import { resolveActivity } from '../../adapters/index.js';
+import type { ActivityTarget } from '../../adapters/index.js';
 import { AGENT_WORKSPACE, GITHUB_OWNER, GITHUB_REPO } from '../../config.js';
 import { createLogger } from '../../logger.js';
 
@@ -33,6 +36,25 @@ interface OrchestratorResult {
   issueNumber?: number;
   error?: string;
   summary?: string;
+  /**
+   * True when a live Discord surface already showed the user the terminal
+   * result, so downstream webhook/notifier fallbacks should stay silent.
+   */
+  deliveredToUser?: boolean;
+}
+
+/** Resolve the live Discord surface for a tracked issue/PR, if any. */
+function issueTarget(issueNumber: number | undefined, repo: string): ActivityTarget | undefined {
+  if (!issueNumber) return undefined;
+  const tracked = getTrackedIssue(issueNumber, repo);
+  if (!tracked) return undefined;
+  return { platform: tracked.platform, channelId: tracked.channelId, userId: tracked.userId, conversationRef: tracked.conversationRef, label: `Issue #${issueNumber}` };
+}
+
+function prTarget(prNumber: number, repo: string): ActivityTarget | undefined {
+  const tracked = getTrackedPR(prNumber, repo);
+  if (!tracked) return undefined;
+  return { platform: tracked.platform, channelId: tracked.channelId, userId: tracked.userId, conversationRef: tracked.conversationRef, label: `PR #${prNumber} revision` };
 }
 
 // ─── Job Queue ────────────────────────────────────────────────────────────────
@@ -466,21 +488,36 @@ async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResu
     }
   }
 
-  // 3. Run the coding agent
+  // 3. Run the coding agent. If the originating issue is tracked back to a
+  //    Discord channel, stream the agent's thinking into a single live message
+  //    there (ack → work → done/fail). Untracked / non-Discord jobs get a no-op
+  //    session and fall back to the webhook's completion notification.
+  const session = resolveActivity(issueTarget(issueNumber, targetRepo));
+  await session.ack();
+  // Once a live surface delivered the result, untrack so the webhook fallbacks
+  // (`pull_request.opened`, label `.then`) don't post a duplicate completion.
+  const settle = async (r: OrchestratorResult): Promise<OrchestratorResult> => {
+    if (session.delivered && issueNumber) untrackIssue(issueNumber, targetRepo);
+    return { ...r, deliveredToUser: session.delivered };
+  };
+
   let result: AgentResult;
   try {
     result = await agent.execute(
       { prompt: task },
-      repoDir
+      repoDir,
+      (p) => session.work(p),
     );
   } catch (err) {
     git(['checkout', 'main'], repoDir);
-    return { success: false, error: `Agent failed: ${err}` };
+    await session.fail(`Couldn't complete the task: ${err}.`);
+    return settle({ success: false, error: `Agent failed: ${err}` });
   }
 
   if (!result.success) {
     git(['checkout', 'main'], repoDir);
-    return { success: false, error: result.error || 'Agent reported failure.' };
+    await session.fail(`Couldn't complete the task: ${result.error || 'agent reported failure'}.`);
+    return settle({ success: false, error: result.error || 'Agent reported failure.' });
   }
 
   // 4. Clean up temp attachments so they aren't committed
@@ -493,7 +530,8 @@ async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResu
   const status = git(['status', '--porcelain'], repoDir);
   if (!status) {
     git(['checkout', 'main'], repoDir);
-    return { success: false, error: 'Agent finished but made no changes.' };
+    await session.fail('Finished, but ended up making no changes.');
+    return settle({ success: false, error: 'Agent finished but made no changes.' });
   }
 
   // 6. Commit and push
@@ -510,7 +548,8 @@ async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResu
     git(['push', 'origin', branchName, '--force'], repoDir);
   } catch (err) {
     git(['checkout', 'main'], repoDir);
-    return { success: false, error: `Failed to push: ${err}` };
+    await session.fail(`Made changes but couldn't push them: ${err}.`);
+    return settle({ success: false, error: `Failed to push: ${err}` });
   }
 
   // 6. Open a PR
@@ -566,13 +605,26 @@ async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResu
       result: `PR created: ${pr.html_url}`,
     });
 
-    return {
+    const previewNote = targetRepo === GITHUB_REPO
+      ? `\nProposed change: https://preview.redmondtechorchestra.org`
+      : '';
+    // Untrack BEFORE the (awaited) Discord delivery: everything since
+    // `pulls.create` has been synchronous, so the `pull_request.opened` webhook
+    // can't have been processed yet. Untracking now guarantees that fallback
+    // sees no tracked issue and stays silent — no duplicate completion message.
+    if (session.delivered && issueNumber) untrackIssue(issueNumber, targetRepo);
+    await session.done({
+      headline: `Opened PR #${pr.number}: ${pr.html_url}${previewNote}`,
+      actions: { kind: 'pr-actions', repo: targetRepo, prNumber: pr.number },
+    });
+
+    return settle({
       success: true,
       prUrl: pr.html_url,
       prNumber: pr.number,
       issueNumber,
       summary: result.summary,
-    };
+    });
   } catch (err) {
     git(['checkout', 'main'], repoDir);
     log.audit({
@@ -581,7 +633,8 @@ async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResu
       input_summary: `#${issueNumber ?? '?'}: ${prTitle}`.slice(0, 500),
       result: `Failed: ${err}`,
     });
-    return { success: false, error: `PR creation failed: ${err}` };
+    await session.fail(`Pushed the changes but couldn't open the PR: ${err}.`);
+    return settle({ success: false, error: `PR creation failed: ${err}` });
   }
 }
 
@@ -635,27 +688,38 @@ async function executeRevision(options: RevisionTaskOptions): Promise<Orchestrat
     `Apply these changes to the existing branch. Only make changes related to the user's feedback — do not undo or rework anything from the original PR unless explicitly asked.`,
   ].join('\n');
 
-  // 5. Run the agent
+  // 5. Run the agent. If the revision was requested from a Discord channel,
+  //    stream the agent's thinking into a single live message there and finalize
+  //    it with the result (ack → work → done/fail). Untracked / non-Discord
+  //    jobs get a no-op session and fall back to `notifyOnRevisionComplete`.
+  const session = resolveActivity(prTarget(prNumber, repo));
+  await session.ack();
+  const settle = async (r: OrchestratorResult): Promise<OrchestratorResult> => {
+    if (session.delivered) untrackPR(prNumber, repo);
+    return { ...r, deliveredToUser: session.delivered };
+  };
+
   let result: AgentResult;
   try {
-    result = await agent.execute({ prompt }, repoDir);
+    result = await agent.execute({ prompt }, repoDir, (p) => session.work(p));
   } catch (err) {
     git(['checkout', 'main'], repoDir);
-    return { success: false, error: `Agent failed: ${err}` };
+    await session.fail(`Couldn't apply revision: ${err}.`);
+    return settle({ success: false, error: `Agent failed: ${err}` });
   }
 
   if (!result.success) {
     git(['checkout', 'main'], repoDir);
-    await safeComment(repo, prNumber, `Couldn't apply revision: ${result.error || 'agent reported failure'}.`);
-    return { success: false, error: result.error || 'Agent reported failure.' };
+    await session.fail(`Couldn't apply revision: ${result.error || 'agent reported failure'}.`);
+    return settle({ success: false, error: result.error || 'Agent reported failure.' });
   }
 
   // 6. Anything to commit?
-  const status = git(['status', '--porcelain'], repoDir);
-  if (!status) {
+  const changes = git(['status', '--porcelain'], repoDir);
+  if (!changes) {
     git(['checkout', 'main'], repoDir);
-    await safeComment(repo, prNumber, `Took a look but didn't end up changing anything.\n\n${result.summary || ''}`.trim());
-    return { success: false, error: 'Agent finished but made no changes.' };
+    await session.fail(`Took a look but didn't end up changing anything.`);
+    return settle({ success: false, error: 'Agent finished but made no changes.' });
   }
 
   // 7. Commit + push
@@ -670,16 +734,16 @@ async function executeRevision(options: RevisionTaskOptions): Promise<Orchestrat
     newSha = git(['rev-parse', '--short', 'HEAD'], repoDir);
   } catch (err) {
     git(['checkout', 'main'], repoDir);
-    return { success: false, error: `Failed to push: ${err}` };
+    await session.fail(`Made changes but couldn't push them: ${err}.`);
+    return settle({ success: false, error: `Failed to push: ${err}` });
   } finally {
     git(['checkout', 'main'], repoDir);
   }
 
-  await safeComment(repo, prNumber, [
-    `Pushed \`${newSha}\` with the requested changes.`,
-    '',
-    result.summary,
-  ].join('\n'));
+  await session.done({
+    headline: `Revision pushed to PR #${prNumber} (\`${newSha}\`): ${pr.htmlUrl}`,
+    actions: { kind: 'pr-actions', repo, prNumber },
+  });
 
   log.audit({
     type: 'coding',
@@ -688,14 +752,6 @@ async function executeRevision(options: RevisionTaskOptions): Promise<Orchestrat
     result: `Pushed ${newSha}`,
   });
 
-  return { success: true, prUrl: pr.htmlUrl, prNumber: pr.number, summary: result.summary };
-}
-
-async function safeComment(repo: string, prNumber: number, body: string): Promise<void> {
-  try {
-    await commentOnPR(repo, prNumber, body);
-  } catch (err) {
-    log.warn(`Failed to post status comment on ${repo}/PR${prNumber}:`, err);
-  }
+  return settle({ success: true, prUrl: pr.htmlUrl, prNumber: pr.number, summary: result.summary });
 }
 
