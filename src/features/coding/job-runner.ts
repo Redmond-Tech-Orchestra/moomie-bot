@@ -14,6 +14,7 @@ import {
   getResumableJobs,
   pruneFinishedJobs,
 } from './job-store.js';
+import { notifyOnRevisionComplete } from './revision-notifier.js';
 import { AGENT_WORKSPACE, GITHUB_OWNER, GITHUB_REPO } from '../../config.js';
 import { createLogger } from '../../logger.js';
 
@@ -368,11 +369,11 @@ export function runRevisionTask(options: RevisionTaskOptions): Promise<Orchestra
  * resumed in place — an LLM agent run isn't checkpointable — so it's retried
  * from scratch; `executeTask` guards against duplicate PRs for the same branch.
  *
- * Recovered jobs have no live caller to await them. User notifications are
- * delivered by the GitHub `pull_request.opened` webhook (which looks up the
- * still-tracked issue), so the recovery handler here only updates job status.
- * In-flight *revisions* push to an existing PR (no new PR event) and therefore
- * won't re-notify on recovery — an acceptable edge case for a rare path.
+ * Recovered jobs have no live caller to await them, so notifications are
+ * re-attached here: recovered *revisions* are wired back through
+ * `notifyOnRevisionComplete` (the `tracked_prs` row persists), and recovered
+ * *new* jobs are notified by the GitHub `pull_request.opened` webhook (which
+ * looks up the still-tracked issue) — so those only need a status update.
  */
 export function recoverJobs(): void {
   pruneFinishedJobs();
@@ -404,11 +405,18 @@ export function recoverJobs(): void {
     }
 
     if (interrupted) requeueInterrupted(row.id);
-    const noop = () => {};
+    const enqueuedAt = row.enqueued_at * 1000;
     if (row.kind === 'new') {
-      queue.push({ kind: 'new', options: options as CodingTaskOptions, resolve: noop, reject: noop, enqueuedAt: row.enqueued_at * 1000, dbId: row.id });
+      const noop = () => {};
+      queue.push({ kind: 'new', options: options as CodingTaskOptions, resolve: noop, reject: noop, enqueuedAt, dbId: row.id });
     } else {
-      queue.push({ kind: 'revision', options: options as RevisionTaskOptions, resolve: noop, reject: noop, enqueuedAt: row.enqueued_at * 1000, dbId: row.id });
+      // Re-attach the completion ping: build a real promise around the queued
+      // job so the originating channel (still in tracked_prs) gets notified.
+      const opts = options as RevisionTaskOptions;
+      const p = new Promise<OrchestratorResult>((resolve, reject) => {
+        queue.push({ kind: 'revision', options: opts, resolve, reject, enqueuedAt, dbId: row.id });
+      });
+      notifyOnRevisionComplete(opts.repo, opts.prNumber, p);
     }
     resumed++;
   }
