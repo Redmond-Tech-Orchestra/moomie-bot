@@ -5,6 +5,16 @@ import { getOctokit, getInstallationToken, getPullRequest, commentOnPR } from '.
 import { getAgent } from './agents/index.js';
 import type { AgentResult } from './agents/index.js';
 import { copyToWorkspace, deleteUploads } from '../website/attachment-store.js';
+import {
+  insertJob,
+  markRunning,
+  markDone,
+  markFailed,
+  requeueInterrupted,
+  getResumableJobs,
+  pruneFinishedJobs,
+} from './job-store.js';
+import { notifyOnRevisionComplete } from './revision-notifier.js';
 import { AGENT_WORKSPACE, GITHUB_OWNER, GITHUB_REPO } from '../../config.js';
 import { createLogger } from '../../logger.js';
 
@@ -14,6 +24,7 @@ const WORKSPACE_DIR = path.resolve(AGENT_WORKSPACE);
 const MAX_QUEUE_SIZE = 5;
 const JOB_TIMEOUT_MS = 35 * 60 * 1000; // 35 min (slightly above Gemini's 30 min hard cap)
 const JOB_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour — discard queued jobs older than this
+const MAX_ATTEMPTS = 3; // give up resuming a job after this many interrupted runs
 
 interface OrchestratorResult {
   success: boolean;
@@ -32,6 +43,8 @@ interface NewTaskJob {
   resolve: (result: OrchestratorResult) => void;
   reject: (err: Error) => void;
   enqueuedAt: number;
+  /** Row id in the coding_jobs table (for restart recovery). */
+  dbId: number;
 }
 
 interface RevisionTaskJob {
@@ -40,6 +53,8 @@ interface RevisionTaskJob {
   resolve: (result: OrchestratorResult) => void;
   reject: (err: Error) => void;
   enqueuedAt: number;
+  /** Row id in the coding_jobs table (for restart recovery). */
+  dbId: number;
 }
 
 type QueuedJob = NewTaskJob | RevisionTaskJob;
@@ -49,6 +64,22 @@ let running = false;
 let currentJobStart: number | null = null;
 let warmupDone = false;
 let warmupPromise: Promise<void> | null = null;
+
+// Drain mode: when true, `processQueue` finishes the in-flight job but does NOT
+// pick up the next one. A deploy flips this on, waits for the running job to
+// settle, then swaps the container. Queued jobs persist (coding_jobs table) and
+// resume on the next startup, so they're safe to leave behind.
+let draining = false;
+
+export function setDraining(value: boolean): void {
+  if (draining !== value) log.info(value ? 'Entering drain mode — no new jobs will start.' : 'Exiting drain mode.');
+  draining = value;
+  if (!value) processQueue();
+}
+
+export function isDraining(): boolean {
+  return draining;
+}
 
 function jobLabel(job: QueuedJob): string {
   if (job.kind === 'new') return `new#${job.options.issueNumber || '?'}`;
@@ -65,6 +96,8 @@ function jobRepo(job: QueuedJob): string {
 
 async function processQueue(): Promise<void> {
   if (running || queue.length === 0) return;
+  // Drain mode: leave queued jobs in place; they'll resume after the next start.
+  if (draining) return;
   // Wait for warmup to finish before processing jobs
   if (!warmupDone && warmupPromise) await warmupPromise;
 
@@ -72,16 +105,20 @@ async function processQueue(): Promise<void> {
   while (queue.length > 0 && Date.now() - queue[0].enqueuedAt > JOB_MAX_AGE_MS) {
     const stale = queue.shift()!;
     log.warn(`Discarding stale job ${jobLabel(stale)} (queued ${Math.round((Date.now() - stale.enqueuedAt) / 60000)}min ago)`);
+    markFailed(stale.dbId, { error: 'expired in queue' });
     stale.resolve({ success: false, error: 'Job expired — it waited too long in the queue.' });
     const atts = jobAttachments(stale);
     if (atts?.length) deleteUploads(atts);
   }
 
   if (queue.length === 0) return;
+  // Re-check drain after the warmup await above (it may have flipped meanwhile).
+  if (draining) return;
   running = true;
   currentJobStart = Date.now();
 
   const job = queue.shift()!;
+  markRunning(job.dbId);
   let timedOut = false;
 
   // Hard timeout: race against the job execution
@@ -98,8 +135,11 @@ async function processQueue(): Promise<void> {
       ? executeTask(job.options)
       : executeRevision(job.options);
     const result = await Promise.race([work, timeoutPromise]);
+    if (result.success) markDone(job.dbId, result);
+    else markFailed(job.dbId, result);
     job.resolve(result);
   } catch (err) {
+    markFailed(job.dbId, { error: String(err) });
     job.reject(err instanceof Error ? err : new Error(String(err)));
   } finally {
     const atts = jobAttachments(job);
@@ -248,11 +288,12 @@ interface CodingTaskOptions {
   repo?: string;
 }
 
-export function getQueueStatus(): { running: boolean; queued: number; runningForMs: number | null } {
+export function getQueueStatus(): { running: boolean; queued: number; runningForMs: number | null; draining: boolean } {
   return {
     running,
     queued: queue.length,
     runningForMs: currentJobStart ? Date.now() - currentJobStart : null,
+    draining,
   };
 }
 
@@ -263,6 +304,7 @@ export function getQueueStatus(): { running: boolean; queued: number; runningFor
 export function forceResetQueue(): { drained: number } {
   const drained = queue.length;
   for (const job of queue) {
+    markFailed(job.dbId, { error: 'force-reset by admin' });
     job.resolve({ success: false, error: 'Queue was force-reset by admin.' });
     const atts = jobAttachments(job);
     if (atts?.length) deleteUploads(atts);
@@ -284,8 +326,9 @@ export function runCodingTask(options: CodingTaskOptions): Promise<OrchestratorR
 
   log.info(`Queued new#${options.issueNumber || '?'} (${queue.length + 1} in queue, ${running ? 'one running' : 'idle'})`);
 
+  const dbId = insertJob('new', options);
   return new Promise((resolve, reject) => {
-    queue.push({ kind: 'new', options, resolve, reject, enqueuedAt: Date.now() });
+    queue.push({ kind: 'new', options, resolve, reject, enqueuedAt: Date.now(), dbId });
     processQueue();
   });
 }
@@ -313,10 +356,75 @@ export function runRevisionTask(options: RevisionTaskOptions): Promise<Orchestra
 
   log.info(`Queued rev#${options.repo}/PR${options.prNumber} (${queue.length + 1} in queue, ${running ? 'one running' : 'idle'})`);
 
+  const dbId = insertJob('revision', options);
   return new Promise((resolve, reject) => {
-    queue.push({ kind: 'revision', options, resolve, reject, enqueuedAt: Date.now() });
+    queue.push({ kind: 'revision', options, resolve, reject, enqueuedAt: Date.now(), dbId });
     processQueue();
   });
+}
+
+/**
+ * Re-enqueue jobs that were queued or running when the process last stopped
+ * (deploy, crash, OOM). Called once on startup. A job caught mid-run can't be
+ * resumed in place — an LLM agent run isn't checkpointable — so it's retried
+ * from scratch; `executeTask` guards against duplicate PRs for the same branch.
+ *
+ * Recovered jobs have no live caller to await them, so notifications are
+ * re-attached here: recovered *revisions* are wired back through
+ * `notifyOnRevisionComplete` (the `tracked_prs` row persists), and recovered
+ * *new* jobs are notified by the GitHub `pull_request.opened` webhook (which
+ * looks up the still-tracked issue) — so those only need a status update.
+ */
+export function recoverJobs(): void {
+  pruneFinishedJobs();
+  const rows = getResumableJobs();
+  if (rows.length === 0) return;
+
+  let resumed = 0;
+  for (const row of rows) {
+    const interrupted = row.status === 'running';
+    const ageMs = Date.now() - row.enqueued_at * 1000;
+
+    if (ageMs > JOB_MAX_AGE_MS) {
+      markFailed(row.id, { error: 'expired before recovery' });
+      log.warn(`Skipping stale ${row.kind} job #${row.id} (queued ${Math.round(ageMs / 60000)}min ago).`);
+      continue;
+    }
+    if (interrupted && row.attempts + 1 >= MAX_ATTEMPTS) {
+      markFailed(row.id, { error: `gave up after ${row.attempts + 1} interrupted attempts` });
+      log.warn(`Giving up on ${row.kind} job #${row.id} after ${row.attempts + 1} attempts.`);
+      continue;
+    }
+
+    let options: CodingTaskOptions | RevisionTaskOptions;
+    try {
+      options = JSON.parse(row.payload);
+    } catch (err) {
+      markFailed(row.id, { error: `unparseable payload: ${err}` });
+      continue;
+    }
+
+    if (interrupted) requeueInterrupted(row.id);
+    const enqueuedAt = row.enqueued_at * 1000;
+    if (row.kind === 'new') {
+      const noop = () => {};
+      queue.push({ kind: 'new', options: options as CodingTaskOptions, resolve: noop, reject: noop, enqueuedAt, dbId: row.id });
+    } else {
+      // Re-attach the completion ping: build a real promise around the queued
+      // job so the originating channel (still in tracked_prs) gets notified.
+      const opts = options as RevisionTaskOptions;
+      const p = new Promise<OrchestratorResult>((resolve, reject) => {
+        queue.push({ kind: 'revision', options: opts, resolve, reject, enqueuedAt, dbId: row.id });
+      });
+      notifyOnRevisionComplete(opts.repo, opts.prNumber, p);
+    }
+    resumed++;
+  }
+
+  if (resumed > 0) {
+    log.info(`Recovered ${resumed} coding job(s) from the previous run.`);
+    processQueue();
+  }
 }
 
 // ─── Task Execution ───────────────────────────────────────────────────────────
@@ -426,14 +534,26 @@ async function executeTask(options: CodingTaskOptions): Promise<OrchestratorResu
       issueNumber ? `Fixes #${issueNumber}` : '',
     ].filter(Boolean).join('\n');
 
-    const { data: pr } = await octokit.pulls.create({
+    // Idempotency guard: a recovered/retried job may have already opened a PR
+    // for this branch before the process was killed. Reuse it instead of letting
+    // pulls.create 422 on a duplicate head.
+    const existing = await octokit.pulls.list({
+      owner: GITHUB_OWNER,
+      repo: targetRepo,
+      head: `${GITHUB_OWNER}:${branchName}`,
+      state: 'open',
+    });
+    const pr = existing.data[0] ?? (await octokit.pulls.create({
       owner: GITHUB_OWNER,
       repo: targetRepo,
       title: prTitle,
       body: prBody,
       head: branchName,
       base: 'main',
-    });
+    })).data;
+    if (existing.data[0]) {
+      log.info(`Reusing existing PR #${pr.number} for ${branchName} (recovered job).`);
+    }
 
     // 7. Cleanup: switch to main, delete local branch
     git(['checkout', 'main'], repoDir);

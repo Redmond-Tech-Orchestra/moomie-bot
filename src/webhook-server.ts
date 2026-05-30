@@ -4,7 +4,7 @@ import type { Request, Response, NextFunction } from 'express';
 import type { Client } from 'discord.js';
 import { getTrackedIssue, untrackIssue } from './features/coding/issue-tracker.js';
 import { isOrgMember, listReviewComments } from './features/coding/github-client.js';
-import { runCodingTask, runRevisionTask, getQueueStatus } from './features/coding/job-runner.js';
+import { runCodingTask, runRevisionTask, getQueueStatus, setDraining } from './features/coding/job-runner.js';
 import { notifyOnRevisionComplete } from './features/coding/revision-notifier.js';
 import { startTeams } from './adapters/teams.js';
 import { getUploadsDir } from './features/website/attachment-store.js';
@@ -100,11 +100,23 @@ export function startServer(discordClient: Client): express.Express {
         running: status.running,
         queued: status.queued,
         runningForMin: status.runningForMs ? Math.round(status.runningForMs / 60000) : null,
+        draining: status.draining,
       },
     });
   });
 
-
+  // Deploy-time drain control. Flipping drain on lets the in-flight coding job
+  // finish while blocking new pickups, so a deploy can swap the container without
+  // killing a running job. Guarded because nginx proxies all paths publicly:
+  // require a matching DEPLOY_TOKEN header, or — if no token is configured —
+  // only accept direct loopback calls (no proxy headers), which is how the
+  // server-side deploy script reaches it.
+  app.post('/drain', (req: Request, res: Response) => {
+    if (!isLocalDeployRequest(req)) return res.status(403).json({ ok: false, error: 'forbidden' });
+    const drain = req.body?.drain !== false; // default true
+    setDraining(drain);
+    res.json({ ok: true, draining: drain, queue: getQueueStatus() });
+  });
 
   // Register Teams bot endpoint
   startTeams(app);
@@ -121,6 +133,22 @@ export function startServer(discordClient: Client): express.Express {
 }
 
 // ─── Webhook Handlers ─────────────────────────────────────────────────────────
+
+/**
+ * Authorize a deploy-control request (`/drain`). Since nginx proxies every path
+ * publicly, this must not be open to the internet:
+ *  - If DEPLOY_TOKEN is set, require a matching `x-deploy-token` header.
+ *  - Otherwise accept only direct loopback calls: nginx-proxied requests carry
+ *    `x-forwarded-*` headers and a public Host, so a plain `curl localhost:3000`
+ *    from the server-side deploy script is distinguishable.
+ */
+function isLocalDeployRequest(req: Request): boolean {
+  const token = process.env.DEPLOY_TOKEN;
+  if (token) return req.get('x-deploy-token') === token;
+  if (req.headers['x-forwarded-for'] || req.headers['x-forwarded-host']) return false;
+  const host = (req.hostname || '').toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+}
 
 async function handlePullRequest(pr: { number: number; body?: string; html_url: string }, repo?: string): Promise<void> {
   const issueRefs = pr.body?.matchAll(/(?:closes|fixes|resolves)\s+#(\d+)/gi);
