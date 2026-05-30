@@ -118,8 +118,6 @@ export function startServer(discordClient: Client): express.Express {
     res.json({ ok: true, draining: drain, queue: getQueueStatus() });
   });
 
-
-
   // Register Teams bot endpoint
   startTeams(app);
 

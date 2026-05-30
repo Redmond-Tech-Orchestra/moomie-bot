@@ -374,7 +374,7 @@ export function runRevisionTask(options: RevisionTaskOptions): Promise<Orchestra
  * In-flight *revisions* push to an existing PR (no new PR event) and therefore
  * won't re-notify on recovery — an acceptable edge case for a rare path.
  */
- export function recoverJobs(): void {
+export function recoverJobs(): void {
   pruneFinishedJobs();
   const rows = getResumableJobs();
   if (rows.length === 0) return;
