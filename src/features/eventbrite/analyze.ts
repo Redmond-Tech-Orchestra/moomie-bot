@@ -18,7 +18,10 @@
 
 import { resolve } from 'node:path';
 import { existsSync } from 'node:fs';
-import { EVENTBRITE_DATA_DIR, MODEL_EXTRACT, geminiUrl } from '../../config.js';
+import { generateText, stepCountIs, hasToolCall, tool } from 'ai';
+import { z } from 'zod';
+import { EVENTBRITE_DATA_DIR } from '../../config.js';
+import { getModel, hasLlmKey } from '../../llm.js';
 import { createLogger } from '../../logger.js';
 import { runPython } from '../sandbox/python-runner.js';
 
@@ -236,40 +239,6 @@ saving, print a short confirmation line (e.g. \`saved chart.png\`) — don't
 repeat the data in the answer.
 `.trim();
 
-// ─── Pro function-call tools (what Pro can call inside the loop) ─────────────
-
-const PRO_TOOL_DECLARATIONS = [
-  {
-    name: 'run_python_code',
-    description:
-      'Execute Python in a sandbox with read access to the Eventbrite archive at $EVENTBRITE_DATA_DIR. ' +
-      'pandas/numpy preinstalled. No network. Returns stdout, stderr, exit_code, duration_ms.',
-    parameters: {
-      type: 'object',
-      properties: {
-        code: { type: 'string', description: 'Python source. Print results to stdout.' },
-        reason: {
-          type: 'string',
-          description: 'Brief one-line note on what this iteration is trying to accomplish.',
-        },
-      },
-      required: ['code'],
-    },
-  },
-  {
-    name: 'finalize',
-    description: 'Submit the final natural-language answer to the question. Call this when you have what you need.',
-    parameters: {
-      type: 'object',
-      properties: {
-        answer: { type: 'string', description: 'The final answer to the user\'s question.' },
-        summary: { type: 'string', description: 'Brief note on what you did to arrive at this.' },
-      },
-      required: ['answer'],
-    },
-  },
-];
-
 // ─── Public types ────────────────────────────────────────────────────────────
 
 export interface AnalyzeFile {
@@ -303,9 +272,8 @@ export interface AnalyzeResult {
 
 export async function analyze(question: string, context?: string): Promise<AnalyzeResult> {
   const t0 = Date.now();
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    return errorResult(t0, 'GEMINI_API_KEY is not set');
+  if (!hasLlmKey()) {
+    return errorResult(t0, 'LLM API key is not set');
   }
 
   const dataDirAbs = resolve(EVENTBRITE_DATA_DIR);
@@ -315,110 +283,110 @@ export async function analyze(question: string, context?: string): Promise<Analy
 
   const systemPrompt = buildSystemPrompt(dataDirAbs);
   const userMessage = context ? `${question}\n\nAdditional context:\n${context}` : question;
-  const contents: GeminiContent[] = [{ role: 'user', parts: [{ text: userMessage }] }];
 
   const transcript: AnalyzeResult['transcript'] = [];
   const collectedFiles: AnalyzeFile[] = [];
+  let iter = 0;
+  let finalizeAnswer: string | null = null;
+  let finalizeSummary: string | null = null;
 
-  for (let iter = 1; iter <= MAX_ITERATIONS; iter++) {
-    const response = await callGeminiPro(apiKey, systemPrompt, contents);
-    if ('error' in response) {
-      return finishResult(t0, transcript, iter, null, null, collectedFiles, `Gemini call failed: ${response.error}`);
-    }
+  const tools = {
+    run_python_code: tool({
+      description:
+        'Execute Python in a sandbox with read access to the Eventbrite archive at $EVENTBRITE_DATA_DIR. ' +
+        'pandas/numpy preinstalled. No network. Returns stdout, stderr, exit_code, duration_ms.',
+      inputSchema: z.object({
+        code: z.string().describe('Python source. Print results to stdout.'),
+        reason: z.string().optional().describe('Brief one-line note on what this iteration is trying to accomplish.'),
+      }),
+      execute: async ({ code, reason }) => {
+        iter++;
+        const result = await runPython({
+          code,
+          timeoutMs: PYTHON_TIMEOUT_MS,
+          env: { EVENTBRITE_DATA_DIR: dataDirAbs },
+          collectFiles: { extensions: ['.csv', '.png'] },
+        });
 
-    const parts = response.data.candidates?.[0]?.content?.parts;
-    if (!parts || parts.length === 0) {
-      return finishResult(t0, transcript, iter, null, null, collectedFiles, 'Gemini returned no parts');
-    }
+        const filesProduced: string[] = [];
+        for (const f of result.files ?? []) {
+          const finalName = uniqueFileName(f.name, collectedFiles);
+          collectedFiles.push({ name: finalName, data: f.data, from_iteration: iter });
+          filesProduced.push(finalName);
+        }
 
-    contents.push({ role: 'model', parts });
+        transcript.push({
+          iteration: iter,
+          code,
+          reason,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          exit_code: result.exit_code,
+          duration_ms: result.duration_ms,
+          timed_out: result.timed_out,
+          files_produced: filesProduced.length ? filesProduced : undefined,
+        });
 
-    // Find the first function call (we only honor one per iteration).
-    const fnCall = parts.find((p) => p.functionCall)?.functionCall;
-    if (!fnCall) {
-      // Pro returned plain text without calling a tool — treat as final answer.
-      const text = (parts.find((p) => p.text)?.text as string) ?? '';
-      return finishResult(t0, transcript, iter, text || null, null, collectedFiles);
-    }
+        log.info(
+          `iter=${iter} code=${code.length}b exit=${result.exit_code} dur=${result.duration_ms}ms stdout=${result.stdout.length}b stderr=${result.stderr.length}b files=${filesProduced.length}${result.timed_out ? ' TIMED_OUT' : ''}`,
+        );
 
-    if (fnCall.name === 'finalize') {
-      const answer = (fnCall.args?.answer as string) ?? null;
-      const summary = (fnCall.args?.summary as string) ?? null;
-      return finishResult(t0, transcript, iter, answer, summary, collectedFiles);
-    }
+        return {
+          exit_code: result.exit_code,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          duration_ms: result.duration_ms,
+          timed_out: result.timed_out,
+          stdout_truncated: result.stdout_truncated,
+          stderr_truncated: result.stderr_truncated,
+          files_produced: filesProduced,
+        };
+      },
+    }),
+    finalize: tool({
+      description: 'Submit the final natural-language answer to the question. Call this when you have what you need.',
+      inputSchema: z.object({
+        answer: z.string().describe("The final answer to the user's question."),
+        summary: z.string().optional().describe('Brief note on what you did to arrive at this.'),
+      }),
+      execute: async ({ answer, summary }) => {
+        finalizeAnswer = answer ?? null;
+        finalizeSummary = summary ?? null;
+        return { ok: true };
+      },
+    }),
+  };
 
-    if (fnCall.name === 'run_python_code') {
-      const code = (fnCall.args?.code as string) ?? '';
-      const reason = (fnCall.args?.reason as string) ?? '';
-      const result = await runPython({
-        code,
-        timeoutMs: PYTHON_TIMEOUT_MS,
-        env: { EVENTBRITE_DATA_DIR: dataDirAbs },
-        collectFiles: { extensions: ['.csv', '.png'] },
-      });
-
-      const filesProduced: string[] = [];
-      for (const f of result.files ?? []) {
-        const finalName = uniqueFileName(f.name, collectedFiles);
-        collectedFiles.push({ name: finalName, data: f.data, from_iteration: iter });
-        filesProduced.push(finalName);
-      }
-
-      transcript.push({
-        iteration: iter,
-        code,
-        reason,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        exit_code: result.exit_code,
-        duration_ms: result.duration_ms,
-        timed_out: result.timed_out,
-        files_produced: filesProduced.length ? filesProduced : undefined,
-      });
-
-      log.info(
-        `iter=${iter} code=${code.length}b exit=${result.exit_code} dur=${result.duration_ms}ms stdout=${result.stdout.length}b stderr=${result.stderr.length}b files=${filesProduced.length}${result.timed_out ? ' TIMED_OUT' : ''}`,
-      );
-
-      // Feed the result back as the function response.
-      contents.push({
-        role: 'user',
-        parts: [
-          {
-            functionResponse: {
-              name: 'run_python_code',
-              response: {
-                exit_code: result.exit_code,
-                stdout: result.stdout,
-                stderr: result.stderr,
-                duration_ms: result.duration_ms,
-                timed_out: result.timed_out,
-                stdout_truncated: result.stdout_truncated,
-                stderr_truncated: result.stderr_truncated,
-                files_produced: filesProduced,
-              },
-            },
-          },
-        ],
-      });
-      continue;
-    }
-
-    // Unknown function name — tell Pro and continue.
-    contents.push({
-      role: 'user',
-      parts: [
-        {
-          functionResponse: {
-            name: fnCall.name,
-            response: { error: `Unknown tool: ${fnCall.name}. Use run_python_code or finalize.` },
-          },
-        },
-      ],
+  try {
+    const result = await generateText({
+      model: getModel('extract'),
+      system: systemPrompt,
+      prompt: userMessage,
+      tools,
+      stopWhen: [stepCountIs(MAX_ITERATIONS), hasToolCall('finalize')],
     });
-  }
 
-  return finishResult(t0, transcript, MAX_ITERATIONS, null, null, collectedFiles, `Hit max iterations (${MAX_ITERATIONS}) without finalizing`);
+    const iterationsUsed = result.steps?.length ?? iter;
+
+    if (finalizeAnswer !== null) {
+      return finishResult(t0, transcript, iterationsUsed, finalizeAnswer, finalizeSummary, collectedFiles);
+    }
+
+    // Model produced a plain-text answer without calling finalize.
+    const text = result.text?.trim();
+    if (text) {
+      return finishResult(t0, transcript, iterationsUsed, text, null, collectedFiles);
+    }
+
+    return finishResult(
+      t0, transcript, iterationsUsed, null, null, collectedFiles,
+      `Hit max iterations (${MAX_ITERATIONS}) without finalizing`,
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.error('Eventbrite analyze call failed:', err);
+    return finishResult(t0, transcript, iter, null, null, collectedFiles, `LLM call failed: ${msg}`);
+  }
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -444,56 +412,6 @@ matplotlib — NEVER print an ASCII bar chart, sparkline, or text-art
 diagram.** Files written to cwd are auto-attached to the reply.
 
 ${SCHEMA_DOC}`;
-}
-
-interface GeminiContent {
-  role: string;
-  parts: Array<{
-    text?: string;
-    functionCall?: { name: string; args?: Record<string, unknown> };
-    functionResponse?: { name: string; response: Record<string, unknown> };
-  }>;
-}
-
-interface GeminiResponse {
-  candidates?: Array<{
-    content?: {
-      parts?: Array<{
-        text?: string;
-        functionCall?: { name: string; args?: Record<string, unknown> };
-      }>;
-    };
-  }>;
-  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
-}
-
-async function callGeminiPro(
-  apiKey: string,
-  systemPrompt: string,
-  contents: GeminiContent[],
-): Promise<{ data: GeminiResponse } | { error: string }> {
-  try {
-    const res = await fetch(`${geminiUrl(MODEL_EXTRACT)}?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents,
-        tools: [{ functionDeclarations: PRO_TOOL_DECLARATIONS }],
-      }),
-    });
-
-    if (!res.ok) {
-      const body = await res.text();
-      log.error(`Gemini Pro error ${res.status}:`, body);
-      return { error: `${res.status} ${res.statusText}` };
-    }
-
-    return { data: await res.json() as GeminiResponse };
-  } catch (err) {
-    log.error('Gemini Pro call failed:', err);
-    return { error: err instanceof Error ? err.message : String(err) };
-  }
 }
 
 function finishResult(

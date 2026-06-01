@@ -19,7 +19,7 @@ backups, deploy flows, request diagrams), see the
 
 ## Automatic Features
 
-**Conversation Watcher** — Monitors all text channels. After 2 hours of silence, extracts action items, detects completions, and nudges stalled discussions via Gemini 2.5 Flash. Posts findings with ✅/❌ for human confirmation. Includes insert-time dedup to prevent cross-channel duplicates.
+**Conversation Watcher** — Monitors all text channels. After 2 hours of silence, extracts action items, detects completions, and nudges stalled discussions via the configured LLM (`LLM_PROVIDER`: Gemini by default, OpenAI optional). Posts findings with ✅/❌ for human confirmation. Includes insert-time dedup to prevent cross-channel duplicates.
 
 **Event Watcher** — Auto-detects new channels in the "Performances" category, parses event names/dates, and tracks them. Archives events when channels move to "Archived."
 
