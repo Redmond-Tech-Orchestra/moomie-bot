@@ -1,8 +1,9 @@
 import type { Client, Message, TextChannel } from 'discord.js';
 import { ChannelType, MessageFlags } from 'discord.js';
+import { z } from 'zod';
 import { loadPrompt } from '../../prompts/load-prompt.js';
 import { ARCHIVED_CATEGORY_ID, modelFor } from '../../config.js';
-import { generateLlmText, hasLlmKey, parseJsonLoose } from '../../llm.js';
+import { generateLlmObject, hasLlmKey } from '../../llm.js';
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('Tracker');
@@ -89,6 +90,36 @@ interface ExtractionResult {
   completions: ExtractedCompletion[];
   nudges: ExtractedNudge[];
 }
+
+const extractedItemSchema = z.object({
+  description: z.string(),
+  owner: z.string().nullable(),
+  owner_id: z.string().nullable(),
+  event: z.string().nullable(),
+  deadline: z.string().nullable(),
+  confidence: z.enum(['confident', 'needs_clarification']),
+  question: z.string().nullable(),
+});
+
+const extractedCompletionSchema = z.object({
+  description: z.string(),
+  item_id: z.number().nullable(),
+  owner: z.string().nullable(),
+  evidence: z.string(),
+});
+
+const extractedNudgeSchema = z.object({
+  type: z.enum(['decision_needed', 'needs_owner', 'stalled_question', 'rehashed_topic', 'deadline_approaching']),
+  message: z.string(),
+  mentions: z.array(z.string()),
+  event: z.string().nullable(),
+});
+
+const extractionResultSchema = z.object({
+  items: z.array(extractedItemSchema),
+  completions: z.array(extractedCompletionSchema),
+  nudges: z.array(extractedNudgeSchema),
+}) satisfies z.ZodType<ExtractionResult>;
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -371,15 +402,12 @@ async function callGemini(
     : transcript;
 
   try {
-    const { text, inputTokens, outputTokens } = await generateLlmText({
+    const { object: parsed, inputTokens, outputTokens } = await generateLlmObject({
       role: 'extract',
       system: systemPrompt,
       prompt: transcript,
-      json: true,
+      schema: extractionResultSchema,
     });
-    if (!text) return null;
-
-    const parsed = parseJsonLoose<ExtractionResult>(text);
 
     // Audit log the extraction
     const itemCount = parsed.items?.length ?? 0;
@@ -391,7 +419,7 @@ async function callGemini(
       channel_name: channelName,
       model: modelFor('extract'),
       input_summary: inputSummary,
-      output_json: text,
+      output_json: JSON.stringify(parsed),
       result: `${itemCount} items, ${completionCount} completions, ${nudgeCount} nudges`,
       tokens_in: inputTokens,
       tokens_out: outputTokens,
@@ -412,6 +440,17 @@ interface DedupResult {
   existing_id: number | null;
   merged_description: string | null;
 }
+
+const dedupResultSchema = z.object({
+  new_index: z.number(),
+  verdict: z.enum(['new', 'duplicate', 'update']),
+  existing_id: z.number().nullable(),
+  merged_description: z.string().nullable(),
+}) satisfies z.ZodType<DedupResult>;
+
+const dedupResponseSchema = z.object({
+  results: z.array(dedupResultSchema),
+});
 
 /**
  * Check a batch of extracted items against existing open items via LLM.
@@ -450,15 +489,12 @@ async function dedupItems(
   }
 
   try {
-    const { text, inputTokens, outputTokens } = await generateLlmText({
+    const { object: parsed, inputTokens, outputTokens } = await generateLlmObject({
       role: 'dedup',
       system: systemPrompt,
       prompt: 'Check these items for duplicates.',
-      json: true,
+      schema: dedupResponseSchema,
     });
-    if (!text) return allNew();
-
-    const parsed = parseJsonLoose<{ results: DedupResult[] }>(text);
 
     // Audit log the dedup call
     const dupes = parsed.results.filter(r => r.verdict === 'duplicate').length;
@@ -467,7 +503,7 @@ async function dedupItems(
       type: 'dedup',
       model: modelFor('dedup'),
       input_summary: `${newItems.length} new vs ${existingItems.length} existing`,
-      output_json: text,
+      output_json: JSON.stringify(parsed),
       result: `${dupes} dupes, ${updates} updates, ${parsed.results.length - dupes - updates} new`,
       tokens_in: inputTokens,
       tokens_out: outputTokens,

@@ -1,5 +1,6 @@
 import type { Client, TextChannel, CategoryChannel } from 'discord.js';
 import { ChannelType } from 'discord.js';
+import { z } from 'zod';
 import { parseChannelName, computeEventDates } from './parse-channel.js';
 import {
   getEventByChannelId,
@@ -13,7 +14,7 @@ import {
   reassignItems,
 } from './store.js';
 import { PERFORMANCES_CATEGORY_ID, ARCHIVED_CATEGORY_ID, DISCORD_GUILD_ID, modelFor } from '../../config.js';
-import { generateLlmText, hasLlmKey, parseJsonLoose } from '../../llm.js';
+import { generateLlmObject, hasLlmKey } from '../../llm.js';
 import { loadPrompt } from '../../prompts/load-prompt.js';
 import { createLogger } from '../../logger.js';
 
@@ -287,6 +288,13 @@ function formatDisplayDate(isoDate: string): string {
 
 // ─── Orphan Item Attribution ─────────────────────────────────────────────────
 
+const attributionSchema = z.object({
+  attributions: z.array(z.object({
+    item_id: z.number(),
+    reason: z.string(),
+  })),
+});
+
 /**
  * When a new event is created, check if any unassigned ("org-wide") items
  * should be attributed to it. Uses an LLM to match based on description.
@@ -314,14 +322,11 @@ async function attributeOrphansToEvent(eventId: number): Promise<void> {
   }, true); // skip persona — this is a mechanical task
 
   try {
-    const { text, inputTokens, outputTokens } = await generateLlmText({
+    const { object: result, inputTokens, outputTokens } = await generateLlmObject({
       role: 'dedup',
       prompt,
-      json: true,
+      schema: attributionSchema,
     });
-    if (!text) return;
-
-    const result = parseJsonLoose<{ attributions: { item_id: number; reason: string }[] }>(text);
     if (!result.attributions?.length) return;
 
     // Validate IDs — only reassign items that are actually orphans
@@ -346,7 +351,7 @@ async function attributeOrphansToEvent(eventId: number): Promise<void> {
       channel_name: event.channel_name ?? undefined,
       model: modelFor('dedup'),
       input_summary: `${orphans.length} orphans, event: ${event.name}`,
-      output_json: text,
+      output_json: JSON.stringify(result),
       result: `${validIds.length} attributed`,
       tokens_in: inputTokens,
       tokens_out: outputTokens,

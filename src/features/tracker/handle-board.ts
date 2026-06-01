@@ -1,6 +1,7 @@
+import { z } from 'zod';
 import type { CommandContext } from '../../types.js';
 import { loadPrompt } from '../../prompts/load-prompt.js';
-import { generateLlmText, hasLlmKey, parseJsonLoose } from '../../llm.js';
+import { generateLlmObject, hasLlmKey } from '../../llm.js';
 import { getActiveEvents, getItemsForEvent, getAllOpenItems, getOrphanItems, type TrackerEvent, type TrackerItem } from './store.js';
 import { buildBoardActionRows } from './board-interactions.js';
 import { createLogger } from '../../logger.js';
@@ -215,6 +216,24 @@ interface ConsolidatedSection {
   items: ConsolidatedItem[];
 }
 
+const consolidatedItemSchema = z.object({
+  source_ids: z.array(z.number()),
+  description: z.string(),
+  owner: z.string().nullable(),
+  target_date: z.string().nullable(),
+  urgency: z.enum(['overdue', 'upcoming', 'normal', 'stale']),
+}) satisfies z.ZodType<ConsolidatedItem>;
+
+const consolidatedSectionSchema = z.object({
+  title: z.string(),
+  event_id: z.number().nullable(),
+  items: z.array(consolidatedItemSchema),
+}) satisfies z.ZodType<ConsolidatedSection>;
+
+const consolidatedBoardSchema = z.object({
+  sections: z.array(consolidatedSectionSchema),
+});
+
 async function getConsolidatedBoard(events: TrackerEvent[]): Promise<ConsolidatedSection[] | null> {
   if (!hasLlmKey()) return null;
 
@@ -244,15 +263,12 @@ async function getConsolidatedBoard(events: TrackerEvent[]): Promise<Consolidate
   }, true);
 
   try {
-    const { text } = await generateLlmText({
+    const { object: parsed } = await generateLlmObject({
       role: 'chat',
       system: systemPrompt,
       prompt: 'Generate the consolidated board.',
-      json: true,
+      schema: consolidatedBoardSchema,
     });
-    if (!text) return null;
-
-    const parsed = parseJsonLoose<{ sections: ConsolidatedSection[] }>(text);
     return parsed.sections;
   } catch (err) {
     log.error('Consolidation failed:', err);

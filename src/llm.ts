@@ -9,7 +9,8 @@
  */
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOpenAI } from '@ai-sdk/openai';
-import { generateText, type LanguageModel } from 'ai';
+import { generateObject, generateText, type LanguageModel } from 'ai';
+import type { z } from 'zod';
 import { LLM_PROVIDER, modelFor, type LlmRole } from './config.js';
 
 // Custom provider instances so we read the bot's existing env var names. The
@@ -52,24 +53,16 @@ export interface LlmTextResult {
   outputTokens?: number;
 }
 
-/**
- * One-shot text generation that works across providers. When `json` is set,
- * Gemini is pinned to JSON output via responseMimeType; for other providers the
- * prompt is expected to instruct JSON and the caller parses with parseJsonLoose.
- */
+/** One-shot plain-text generation that works across providers. */
 export async function generateLlmText(opts: {
   role: LlmRole;
   prompt: string;
   system?: string;
-  json?: boolean;
 }): Promise<LlmTextResult> {
   const { text, usage } = await generateText({
     model: getModel(opts.role),
     system: opts.system,
     prompt: opts.prompt,
-    providerOptions: opts.json
-      ? { google: { responseMimeType: 'application/json' } }
-      : undefined,
   });
   return {
     text: text.trim(),
@@ -78,15 +71,34 @@ export async function generateLlmText(opts: {
   };
 }
 
+export interface LlmObjectResult<T> {
+  object: T;
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
 /**
- * Parse a JSON payload from an LLM response, tolerating ```json code fences
- * that some providers wrap around structured output.
+ * One-shot structured generation that works across providers. Uses the SDK's
+ * `generateObject` so JSON output is enforced and validated against `schema`
+ * regardless of provider (no hand-rolled JSON parsing or provider-specific
+ * response-format flags).
  */
-export function parseJsonLoose<T>(text: string): T {
-  let s = text.trim();
-  if (s.startsWith('```')) {
-    s = s.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-  }
-  return JSON.parse(s) as T;
+export async function generateLlmObject<T>(opts: {
+  role: LlmRole;
+  prompt: string;
+  system?: string;
+  schema: z.ZodType<T>;
+}): Promise<LlmObjectResult<T>> {
+  const { object, usage } = await generateObject({
+    model: getModel(opts.role),
+    system: opts.system,
+    prompt: opts.prompt,
+    schema: opts.schema,
+  });
+  return {
+    object,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+  };
 }
 
