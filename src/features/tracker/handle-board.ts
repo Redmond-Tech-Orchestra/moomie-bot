@@ -1,6 +1,6 @@
 import type { CommandContext } from '../../types.js';
 import { loadPrompt } from '../../prompts/load-prompt.js';
-import { MODEL_CHAT, geminiUrl } from '../../config.js';
+import { generateLlmText, hasLlmKey, parseJsonLoose } from '../../llm.js';
 import { getActiveEvents, getItemsForEvent, getAllOpenItems, getOrphanItems, type TrackerEvent, type TrackerItem } from './store.js';
 import { buildBoardActionRows } from './board-interactions.js';
 import { createLogger } from '../../logger.js';
@@ -216,8 +216,7 @@ interface ConsolidatedSection {
 }
 
 async function getConsolidatedBoard(events: TrackerEvent[]): Promise<ConsolidatedSection[] | null> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return null;
+  if (!hasLlmKey()) return null;
 
   const allItems = getAllOpenItems();
   const orphans = getOrphanItems();
@@ -245,28 +244,15 @@ async function getConsolidatedBoard(events: TrackerEvent[]): Promise<Consolidate
   }, true);
 
   try {
-    const res = await fetch(`${geminiUrl(MODEL_CHAT)}?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ parts: [{ text: 'Generate the consolidated board.' }] }],
-        generationConfig: { responseMimeType: 'application/json' },
-      }),
+    const { text } = await generateLlmText({
+      role: 'chat',
+      system: systemPrompt,
+      prompt: 'Generate the consolidated board.',
+      json: true,
     });
-
-    if (!res.ok) {
-      log.error(`Consolidation API error ${res.status}`);
-      return null;
-    }
-
-    const data = await res.json() as {
-      candidates?: { content?: { parts?: { text?: string }[] } }[];
-    };
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
     if (!text) return null;
 
-    const parsed = JSON.parse(text) as { sections: ConsolidatedSection[] };
+    const parsed = parseJsonLoose<{ sections: ConsolidatedSection[] }>(text);
     return parsed.sections;
   } catch (err) {
     log.error('Consolidation failed:', err);

@@ -42,12 +42,28 @@ export const AGENT_WORKSPACE = process.env.AGENT_WORKSPACE || './workspace';
 export const EVENTBRITE_ORG_ID = process.env.EVENTBRITE_ORG_ID || '2020393260733';
 export const EVENTBRITE_DATA_DIR = process.env.EVENTBRITE_DATA_DIR || './data/eventbrite';
 
-// LLM models — pro for nuanced extraction, flash for everything else
-const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-export const MODEL_CHAT = 'gemini-flash-latest';
-export const MODEL_EXTRACT = 'gemini-pro-latest';
-export const MODEL_DEDUP = 'gemini-flash-latest';
+// LLM provider selection. 'gemini' (default) or 'openai'. Each provider needs
+// its own API key in env (GEMINI_API_KEY / OPENAI_API_KEY).
+export const LLM_PROVIDER = (process.env.LLM_PROVIDER || 'gemini').toLowerCase();
 
-export function geminiUrl(model: string): string {
-  return `${GEMINI_BASE}/${model}:generateContent`;
+// Role → model mapping per provider. Roles: chat (cheap/fast), extract
+// (nuanced), dedup (cheap/fast). Override any value via env.
+export type LlmRole = 'chat' | 'extract' | 'dedup';
+
+const MODELS: Record<string, Record<LlmRole, string>> = {
+  gemini: {
+    chat: process.env.MODEL_CHAT || 'gemini-flash-latest',
+    extract: process.env.MODEL_EXTRACT || 'gemini-pro-latest',
+    dedup: process.env.MODEL_DEDUP || 'gemini-flash-latest',
+  },
+  openai: {
+    chat: process.env.OPENAI_MODEL_CHAT || 'gpt-5.4-mini',
+    extract: process.env.OPENAI_MODEL_EXTRACT || 'gpt-5.4',
+    dedup: process.env.OPENAI_MODEL_DEDUP || 'gpt-5.4-mini',
+  },
+};
+
+export function modelFor(role: LlmRole): string {
+  const provider = MODELS[LLM_PROVIDER] ?? MODELS.gemini;
+  return provider[role];
 }

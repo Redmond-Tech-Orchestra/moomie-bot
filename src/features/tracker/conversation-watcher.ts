@@ -1,7 +1,8 @@
 import type { Client, Message, TextChannel } from 'discord.js';
 import { ChannelType, MessageFlags } from 'discord.js';
 import { loadPrompt } from '../../prompts/load-prompt.js';
-import { ARCHIVED_CATEGORY_ID, MODEL_EXTRACT, MODEL_DEDUP, geminiUrl } from '../../config.js';
+import { ARCHIVED_CATEGORY_ID, modelFor } from '../../config.js';
+import { generateLlmText, hasLlmKey, parseJsonLoose } from '../../llm.js';
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('Tracker');
@@ -223,8 +224,7 @@ function sendFlags(): number | undefined {
 // ─── Extraction Pipeline ────────────────────────────────────────────────────
 
 async function processConversation(channelId: string, messages: BufferedMessage[]): Promise<void> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return;
+  if (!hasLlmKey()) return;
 
   // Build context
   const events = getActiveEvents();
@@ -241,8 +241,8 @@ async function processConversation(channelId: string, messages: BufferedMessage[
   const cachedChannel = discordClient.channels.cache.get(channelId) as TextChannel | undefined;
   const channelName = cachedChannel?.name;
 
-  // Call Gemini
-  const result = await callGemini(apiKey, transcript, eventsContext, openItemsContext, channelId, channelName);
+  // Call the LLM
+  const result = await callGemini(transcript, eventsContext, openItemsContext, channelId, channelName);
   if (!result) return;
 
   // Nothing actionable at all
@@ -354,7 +354,6 @@ function buildOpenItemsContext(events: TrackerEvent[]): string {
 }
 
 async function callGemini(
-  apiKey: string,
   transcript: string,
   eventsContext: string,
   openItemsContext: string,
@@ -372,33 +371,15 @@ async function callGemini(
     : transcript;
 
   try {
-    const res = await fetch(`${geminiUrl(MODEL_EXTRACT)}?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ parts: [{ text: transcript }] }],
-        generationConfig: {
-          responseMimeType: 'application/json',
-        },
-      }),
+    const { text, inputTokens, outputTokens } = await generateLlmText({
+      role: 'extract',
+      system: systemPrompt,
+      prompt: transcript,
+      json: true,
     });
-
-    if (!res.ok) {
-      const body = await res.text();
-      log.error(`Gemini API error ${res.status}:`, body);
-      log.audit({ type: 'extraction', channel_id: channelId, channel_name: channelName, model: MODEL_EXTRACT, input_summary: inputSummary, result: `API error ${res.status}` });
-      return null;
-    }
-
-    const data = await res.json() as {
-      candidates?: { content?: { parts?: { text?: string }[] } }[];
-      usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
-    };
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
     if (!text) return null;
 
-    const parsed = JSON.parse(text) as ExtractionResult;
+    const parsed = parseJsonLoose<ExtractionResult>(text);
 
     // Audit log the extraction
     const itemCount = parsed.items?.length ?? 0;
@@ -408,17 +389,17 @@ async function callGemini(
       type: 'extraction',
       channel_id: channelId,
       channel_name: channelName,
-      model: MODEL_EXTRACT,
+      model: modelFor('extract'),
       input_summary: inputSummary,
       output_json: text,
       result: `${itemCount} items, ${completionCount} completions, ${nudgeCount} nudges`,
-      tokens_in: data.usageMetadata?.promptTokenCount,
-      tokens_out: data.usageMetadata?.candidatesTokenCount,
+      tokens_in: inputTokens,
+      tokens_out: outputTokens,
     });
 
     return parsed;
   } catch (err) {
-    log.error('Gemini extraction call failed:', err);
+    log.error('LLM extraction call failed:', err);
     return null;
   }
 }
@@ -460,56 +441,42 @@ async function dedupItems(
     NEW_ITEMS: newText,
   }, true); // skip persona for utility call
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    log.warn('No GEMINI_API_KEY — skipping dedup, treating all as new');
-    return newItems.map((_, i) => ({ new_index: i, verdict: 'new' as const, existing_id: null, merged_description: null }));
+  const allNew = (): DedupResult[] =>
+    newItems.map((_, i) => ({ new_index: i, verdict: 'new' as const, existing_id: null, merged_description: null }));
+
+  if (!hasLlmKey()) {
+    log.warn('No LLM API key — skipping dedup, treating all as new');
+    return allNew();
   }
 
   try {
-    const res = await fetch(`${geminiUrl(MODEL_DEDUP)}?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ parts: [{ text: 'Check these items for duplicates.' }] }],
-        generationConfig: { responseMimeType: 'application/json' },
-      }),
+    const { text, inputTokens, outputTokens } = await generateLlmText({
+      role: 'dedup',
+      system: systemPrompt,
+      prompt: 'Check these items for duplicates.',
+      json: true,
     });
+    if (!text) return allNew();
 
-    if (!res.ok) {
-      log.error(`Dedup API error ${res.status}`);
-      return newItems.map((_, i) => ({ new_index: i, verdict: 'new' as const, existing_id: null, merged_description: null }));
-    }
-
-    const data = await res.json() as {
-      candidates?: { content?: { parts?: { text?: string }[] } }[];
-      usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
-    };
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-    if (!text) {
-      return newItems.map((_, i) => ({ new_index: i, verdict: 'new' as const, existing_id: null, merged_description: null }));
-    }
-
-    const parsed = JSON.parse(text) as { results: DedupResult[] };
+    const parsed = parseJsonLoose<{ results: DedupResult[] }>(text);
 
     // Audit log the dedup call
     const dupes = parsed.results.filter(r => r.verdict === 'duplicate').length;
     const updates = parsed.results.filter(r => r.verdict === 'update').length;
     log.audit({
       type: 'dedup',
-      model: MODEL_DEDUP,
+      model: modelFor('dedup'),
       input_summary: `${newItems.length} new vs ${existingItems.length} existing`,
       output_json: text,
       result: `${dupes} dupes, ${updates} updates, ${parsed.results.length - dupes - updates} new`,
-      tokens_in: data.usageMetadata?.promptTokenCount,
-      tokens_out: data.usageMetadata?.candidatesTokenCount,
+      tokens_in: inputTokens,
+      tokens_out: outputTokens,
     });
 
     return parsed.results;
   } catch (err) {
     log.error('Dedup call failed:', err);
-    return newItems.map((_, i) => ({ new_index: i, verdict: 'new' as const, existing_id: null, merged_description: null }));
+    return allNew();
   }
 }
 

@@ -1,5 +1,7 @@
 import { ChannelType } from 'discord.js';
 import type { TextChannel } from 'discord.js';
+import { tool, type Tool } from 'ai';
+import { z } from 'zod';
 import { client } from '../../adapters/discord.js';
 import { getDb } from '../../db.js';
 import { DISCORD_GUILD_ID } from '../../config.js';
@@ -219,6 +221,86 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
     case 'analyze_eventbrite': return analyzeEventbriteTool(args, ctx);
     default: return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
+}
+
+// ─── AI SDK Tool Adapters ────────────────────────────────────────────────────
+// Zod input schemas mirroring the Gemini function declarations above. Each tool
+// delegates to executeTool() so the provider-agnostic AI SDK loop can drive the
+// same implementations.
+
+const toolSchemas: Record<string, z.ZodTypeAny> = {
+  query_items: z.object({
+    event_id: z.number().optional().describe('Filter by event ID'),
+    keyword: z.string().optional().describe('Filter items whose description contains this keyword (case-insensitive)'),
+    status: z.enum(['open', 'done', 'stale']).optional().describe('Filter by status. Defaults to open.'),
+  }),
+  resolve_item: z.object({
+    item_id: z.number().describe('The ID of the item to resolve'),
+  }),
+  update_item: z.object({
+    item_id: z.number().describe('The ID of the item to update'),
+    description: z.string().optional().describe('New description'),
+    owner_name: z.string().optional().describe('New owner display name'),
+    owner_id: z.string().optional().describe('New owner Discord user ID'),
+    target_date: z.string().optional().describe('New target date (YYYY-MM-DD)'),
+  }),
+  create_item: z.object({
+    description: z.string().describe('What needs to be done'),
+    event_id: z.number().optional().describe('Associated event ID (null if general)'),
+    owner_name: z.string().optional().describe('Who is responsible'),
+    owner_id: z.string().optional().describe('Discord user ID of owner'),
+    target_date: z.string().optional().describe('Deadline (YYYY-MM-DD)'),
+  }),
+  query_events: z.object({
+    include_past: z.boolean().optional().describe('Include past events. Default false.'),
+  }),
+  read_channel_messages: z.object({
+    channel_id: z.string().describe('The Discord channel ID to read from'),
+    limit: z.number().optional().describe('Max messages to fetch (default 50, max 100)'),
+  }),
+  list_channels: z.object({
+    category: z.string().optional().describe('Filter by category name (case-insensitive)'),
+  }),
+  create_reminder: z.object({
+    message: z.string().describe('The reminder message'),
+    time: z.string().describe('When to remind, e.g. "in 2 hours", "tomorrow at 3pm", "next monday"'),
+    user_id: z.string().optional().describe('Discord user ID to remind. Defaults to the requesting user.'),
+    channel_id: z.string().optional().describe('Channel to send reminder in. Defaults to current channel.'),
+  }),
+  request_website_update: z.object({
+    task: z.string().describe('Clear description of the website change needed.'),
+  }),
+  submit_feedback: z.object({
+    feedback: z.string().describe('What Moomie got wrong, described clearly'),
+    referenced_message: z.string().optional().describe('The Moomie message being corrected, if available'),
+  }),
+  sync_eventbrite_archive: z.object({
+    force: z.boolean().optional().describe('Re-snapshot every past event even if already frozen. Defaults to false.'),
+  }),
+  get_eventbrite_live_sales: z.object({
+    event_id: z.string().optional().describe('Eventbrite event ID. Omit to get all active events.'),
+  }),
+  analyze_eventbrite: z.object({
+    question: z.string().describe('The analytical question, in plain English.'),
+    context: z.string().optional().describe('Optional extra context from the conversation that the analyst should know (e.g. specific event IDs or filters the user mentioned).'),
+  }),
+};
+
+/**
+ * Build the AI SDK tool set for one chat turn, bound to a request-scoped
+ * context. Descriptions are reused from `toolDeclarations`; execution delegates
+ * to `executeTool`.
+ */
+export function buildChatTools(ctx: ToolCallContext): Record<string, Tool> {
+  const tools: Record<string, Tool> = {};
+  for (const decl of toolDeclarations) {
+    tools[decl.name] = tool({
+      description: decl.description,
+      inputSchema: toolSchemas[decl.name] as z.ZodType<Record<string, unknown>>,
+      execute: async (args) => executeTool(decl.name, args, ctx),
+    });
+  }
+  return tools;
 }
 
 // ─── Tool Implementations ────────────────────────────────────────────────────
