@@ -81,7 +81,7 @@ export async function executeWebsiteUpdate(opts: WebsiteUpdateOptions): Promise<
           channelId: threadId,
           userId: userId,
         },
-        `Working on this now — I'll post here when the PR is ready.\nIssue: ${issue.html_url}`,
+        `📋 Issue created: ${issue.html_url}\nOn it — I'll post the PR here when it's ready, and you can reply in this thread to ask for changes.`,
       );
     } catch (err) {
       log.warn(`Failed to post kickoff message in thread ${threadId}:`, err);

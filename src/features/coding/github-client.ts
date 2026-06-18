@@ -129,6 +129,32 @@ export async function commentOnPR(repo: string, prNumber: number, body: string):
   });
 }
 
+/**
+ * Create a comment on a PR and return its id, so it can later be edited in
+ * place via {@link updateComment} (e.g. a live "working on it…" status comment).
+ */
+export async function createComment(repo: string, prNumber: number, body: string): Promise<number> {
+  const octokit = getOctokit();
+  const { data } = await octokit.issues.createComment({
+    owner: GITHUB_OWNER,
+    repo,
+    issue_number: prNumber,
+    body,
+  });
+  return data.id;
+}
+
+/** Edit an existing issue/PR comment in place. */
+export async function updateComment(repo: string, commentId: number, body: string): Promise<void> {
+  const octokit = getOctokit();
+  await octokit.issues.updateComment({
+    owner: GITHUB_OWNER,
+    repo,
+    comment_id: commentId,
+    body,
+  });
+}
+
 export interface PullRequestMergeability {
   state: 'open' | 'closed';
   merged: boolean;

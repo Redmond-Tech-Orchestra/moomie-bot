@@ -1,5 +1,5 @@
 import { Client, GatewayIntentBits, Partials } from 'discord.js';
-import type { ChatInputCommandInteraction, ButtonInteraction, ModalSubmitInteraction, GuildMemberRoleManager } from 'discord.js';
+import type { ChatInputCommandInteraction, ButtonInteraction, ModalSubmitInteraction, GuildMemberRoleManager, ThreadChannel } from 'discord.js';
 import {
   ActionRowBuilder,
   AttachmentBuilder,
@@ -23,7 +23,7 @@ import { trackPR } from '../features/coding/issue-tracker.js';
 import { approveAndMerge } from '../features/coding/pr-actions.js';
 import { runRevisionTask } from '../features/coding/job-runner.js';
 import { notifyOnRevisionComplete } from '../features/coding/revision-notifier.js';
-import { GITHUB_OWNER, GITHUB_REPO, GITHUB_BOT_REPO, WEB_APPROVER_ROLE } from '../config.js';
+import { GITHUB_OWNER, GITHUB_REPO, GITHUB_BOT_REPO, WEB_APPROVER_ROLE, THINKING_CHANNEL_ID } from '../config.js';
 import type { CommandContext } from '../types.js';
 import { createLogger } from '../logger.js';
 
@@ -250,7 +250,17 @@ export async function startDiscord(): Promise<void> {
     const isDirectReplyToBot = referencedBotContent !== null
       && message.mentions.users.filter((u) => !u.bot).size === 0;
 
-    if (!isDM && !isMentioned && !isDirectReplyToBot) return;
+    // A plain message in one of Moomie's own task threads (the per-job thread
+    // opened off a /website or /feedback reply) counts as talking to her — no
+    // @mention needed. Exclude the thinking channel's threads: those are her
+    // reasoning logs, not conversation surfaces.
+    const ch = message.channel;
+    const inMoomieThread = !isDM
+      && ch.isThread()
+      && ch.ownerId === client.user!.id
+      && ch.parentId !== THINKING_CHANNEL_ID;
+
+    if (!isDM && !isMentioned && !isDirectReplyToBot && !inMoomieThread) return;
 
     // Strip the bot mention from the message content
     let content = message.content
@@ -285,6 +295,32 @@ export async function startDiscord(): Promise<void> {
         }
         return;
       }
+    }
+
+    // Conversation-thread relay: a plain message in one of Moomie's task threads
+    // is feedback on that thread's PR — no need to quote the link. Scan the
+    // thread for the PR she announced and forward it as a revision, reusing the
+    // same @moomie-bot → webhook path as the reply relay above.
+    if (inMoomieThread && content) {
+      const pr = await findThreadPR(ch as ThreadChannel, client.user!.id);
+      if (pr) {
+        try {
+          const userName = message.member?.displayName ?? message.author.displayName ?? message.author.username;
+          await commentOnPR(pr.repo, pr.prNumber, `@moomie-bot ${content}\n\n_(via Discord thread reply from ${userName})_`);
+          trackPR(pr.prNumber, pr.repo, {
+            channelId: message.channelId,
+            userId: message.author.id,
+            platform: 'discord',
+          });
+          await message.react('👀');
+        } catch (err) {
+          log.error(`Failed to relay thread reply to ${pr.repo}/PR${pr.prNumber}:`, err);
+          await message.reply("Couldn't forward that to the PR. Sorry. 🐄");
+        }
+        return;
+      }
+      // No PR announced yet (job still running) — fall through to normal chat so
+      // questions still get answered.
     }
 
     if (!content) {
@@ -399,6 +435,26 @@ export async function startDiscord(): Promise<void> {
   });
 
   await client.login(process.env.DISCORD_TOKEN);
+}
+
+/**
+ * Find the PR Moomie announced in one of her task threads by scanning recent
+ * messages for the GitHub PR URL she posts on completion. Returns the most
+ * recent match (so a follow-up PR supersedes an earlier one), or null.
+ */
+async function findThreadPR(thread: ThreadChannel, botId: string): Promise<{ repo: string; prNumber: number } | null> {
+  try {
+    const msgs = await thread.messages.fetch({ limit: 50 });
+    const re = new RegExp(`https://github\\.com/${GITHUB_OWNER}/([\\w.-]+)/pull/(\\d+)`);
+    for (const m of msgs.values()) {
+      if (m.author.id !== botId) continue;
+      const match = m.content.match(re);
+      if (match) return { repo: match[1], prNumber: parseInt(match[2], 10) };
+    }
+  } catch (err) {
+    log.warn('Failed to scan task thread for a PR:', err);
+  }
+  return null;
 }
 
 // ─── PR Action Buttons ──────────────────────────────────────────────────────
