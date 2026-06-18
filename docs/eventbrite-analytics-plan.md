@@ -259,15 +259,24 @@ Expected verification values at time of investigation:
 
 - Confirm analyzer docs say series page views may live on `series_report` while child orders/tickets live on `event_report`.
 
-### Follow-Up Work After PR #42
+### PR #42 Implementation Status
 
-PR #42 should not try to implement the full analyst experience. Follow-up PRs should add:
+Implemented in PR #42:
 
-1. Deterministic Eventbrite analysis kernels.
-2. Timeline-aware baseline context pack generation.
-3. Discord conversation continuity / thread context.
-4. Optional `playbook` argument for `analyze_eventbrite`.
-5. Source-gap and capacity-projection helpers.
+1. Correct dashboard traffic conversion archiving.
+2. Series parent / child event traffic reconciliation in archived JSON.
+3. Trusted Python analysis kernels injected into the sandbox as `eventbrite_kernels`.
+4. Prompt rules for timeline-aware, series-aware, free/paid-aware analysis.
+5. Optional `playbook` argument for `analyze_eventbrite`.
+
+Still not implemented in PR #42:
+
+1. Discord conversation memory / persistent analysis context.
+2. Automatic thread/reply-chain context harvesting beyond existing chat tools.
+3. A deterministic TypeScript context-pack generator that precomputes every table before the LLM runs.
+4. Fully scripted playbook outputs that bypass LLM-authored Python for common requests.
+
+Those remaining items should be scoped separately unless they become necessary during PR #42 review.
 
 ## Timeline-Aware Comparison
 
@@ -546,22 +555,28 @@ I can also break this down by source/affiliate gaps, free vs paid funnel, capaci
 
 ## Implementation Notes
 
-Minimal path:
+Current PR #42 approach:
 
-- Keep PR #42 traffic conversion archive work.
-- Update analyzer prompt with timeline-aware, series-aware, free/paid split, and reach-vs-conversion rules.
+- Trusted TypeScript fetches and archives Eventbrite data.
+- The sandbox gets only local JSON plus the injected `eventbrite_kernels` helper module.
+- The LLM can still write flexible Python, but common calculations are available as reusable kernels to reduce token usage and arithmetic mistakes.
+- Playbooks currently steer the analyzer prompt; they do not yet force fully deterministic output tables.
 
-Better path:
+Future hardening path:
 
-- Add deterministic TypeScript helpers that generate an analysis context pack:
+- Add a deterministic TypeScript context pack generator:
   - current live event snapshots
-  - baseline events
+  - baseline event selection
   - same-point cutoff dates
   - traffic conversion summaries
   - ticket bucket summaries
   - no-show historical rates
+- Add scripted playbook outputs for common requests.
+- Add Discord thread/reply context and optional persisted analysis assumptions as a separate feature.
 
-Best path:
+Final documentation pass:
 
-- Add named playbooks and let `analyze_eventbrite` accept an optional `playbook` argument.
-- Use the playbook to produce structured data tables before invoking the Python analyst.
+- Keep this file as a working design doc during implementation.
+- Before considering the feature complete, rewrite it as a high-level implementation doc.
+- Include a Mermaid chart showing the trusted fetch -> archive -> sandbox analysis flow.
+- Avoid documenting low-level details that are obvious in source code and likely to drift.
