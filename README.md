@@ -19,11 +19,11 @@ backups, deploy flows, request diagrams), see the
 
 ## Automatic Features
 
-**Conversation Watcher** — Monitors all text channels. After 2 hours of silence, extracts action items, detects completions, and nudges stalled discussions via Gemini 2.5 Flash. Posts findings with ✅/❌ for human confirmation. Includes insert-time dedup to prevent cross-channel duplicates.
+**Conversation Watcher** — Monitors all text channels. After 2 hours of silence, extracts action items, detects completions, and nudges stalled discussions via the configured LLM (`LLM_PROVIDER`: OpenAI by default, Gemini optional). Posts findings with ✅/❌ for human confirmation. Includes insert-time dedup to prevent cross-channel duplicates.
 
 **Event Watcher** — Auto-detects new channels in the "Performances" category, parses event names/dates, and tracks them. Archives events when channels move to "Archived."
 
-**Website Agent** — When `/website` is used, the full pipeline runs: issue creation → Gemini CLI agent → branch + PR → user notification.
+**Website Agent** — When `/website` is used, the full pipeline runs: issue creation → coding agent (`CODING_AGENT`: Codex by default, Gemini optional) → branch + PR → user notification.
 
 ## Architecture
 
@@ -60,9 +60,9 @@ Bot saves attachment locally, creates GitHub issue with moomie-bot label
     ↓
 GitHub webhook fires → bot verifies org membership
     ↓
-Job runner: clone repo → create branch → copy attachments → spawn Gemini CLI
+Job runner: clone repo → create branch → copy attachments → spawn coding agent
     ↓
-Gemini makes changes (sandboxed by policies/agent-sandbox.toml)
+The agent makes changes (sandboxed by policies/agent-sandbox.toml)
     ↓
 Git commit + push → open PR (references issue with "Fixes #N")
     ↓
@@ -74,7 +74,8 @@ Bot pings user back on the SAME platform they initiated from
 - Node.js 22+
 - A Discord Application with bot token
 - A GitHub App (recommended) or fine-grained PAT
-- Gemini CLI installed (`npm i -g @anthropic/gemini-cli` or equivalent)
+- A coding-agent CLI (bundled as a dependency): Codex (`@openai/codex`, default) or
+  Gemini (`@google/gemini-cli`); select via `CODING_AGENT`
 - Optional: Docker for containerized deployment
 
 ## Local Development

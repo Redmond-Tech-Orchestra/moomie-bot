@@ -25,7 +25,7 @@ const log = createLogger('JobRunner');
 
 const WORKSPACE_DIR = path.resolve(AGENT_WORKSPACE);
 const MAX_QUEUE_SIZE = 5;
-const JOB_TIMEOUT_MS = 35 * 60 * 1000; // 35 min (slightly above Gemini's 30 min hard cap)
+const JOB_TIMEOUT_MS = 35 * 60 * 1000; // 35 min (slightly above the coding agent's 30 min hard cap)
 const JOB_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour — discard queued jobs older than this
 const MAX_ATTEMPTS = 3; // give up resuming a job after this many interrupted runs
 

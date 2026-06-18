@@ -3,7 +3,8 @@ import { getRecentMessages } from '../../adapters/index.js';
 import type { ChannelMessages } from '../../adapters/index.js';
 import { loadPrompt } from '../../prompts/load-prompt.js';
 import { getActiveEvents, getOpenItemsForEvent } from '../tracker/store.js';
-import { DISCORD_GUILD_ID, MODEL_CHAT, geminiUrl } from '../../config.js';
+import { DISCORD_GUILD_ID } from '../../config.js';
+import { generateLlmText, hasLlmKey } from '../../llm.js';
 import * as chrono from 'chrono-node';
 import { createLogger } from '../../logger.js';
 
@@ -13,7 +14,7 @@ export const name = 'digest';
 export const description = 'Structured summary of recent server activity';
 
 const DEFAULT_WINDOW = '1 week ago';
-const MAX_CONTEXT_CHARS = 80_000; // Stay well under Gemini's context window
+const MAX_CONTEXT_CHARS = 80_000; // Stay well under the model's context window
 
 export async function execute(ctx: CommandContext, args: string): Promise<void> {
   const window = args.trim() || DEFAULT_WINDOW;
@@ -38,7 +39,7 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
   }
 
   const transcript = formatTranscript(channelData);
-  const digest = await callGemini(transcript, window);
+  const digest = await generateDigest(transcript, window);
 
   // Discord has a 2000-char message limit; split if needed
   if (digest.length <= 2000) {
@@ -94,9 +95,8 @@ function formatTranscript(channels: ChannelMessages[]): string {
   return result;
 }
 
-async function callGemini(transcript: string, window: string): Promise<string> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return '*GEMINI_API_KEY not configured.*';
+async function generateDigest(transcript: string, window: string): Promise<string> {
+  if (!hasLlmKey()) return '*LLM API key not configured.*';
 
   const events = getActiveEvents();
   const eventsContext = events.length > 0
@@ -126,28 +126,14 @@ async function callGemini(transcript: string, window: string): Promise<string> {
   });
 
   try {
-    const res = await fetch(`${geminiUrl(MODEL_CHAT)}?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ parts: [{ text: transcript }] }],
-      }),
+    const { text } = await generateLlmText({
+      role: 'chat',
+      system: systemPrompt,
+      prompt: transcript,
     });
-
-    if (!res.ok) {
-      const body = await res.text();
-      log.error(`Gemini API error ${res.status}:`, body);
-      return `*Failed to generate digest (API ${res.status}).*`;
-    }
-
-    const data = await res.json() as {
-      candidates?: { content?: { parts?: { text?: string }[] } }[];
-    };
-    return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim()
-      || '*No response from model.*';
+    return text || '*No response from model.*';
   } catch (err) {
-    log.error('Gemini call failed:', err);
+    log.error('Digest LLM call failed:', err);
     return '*Failed to generate digest.*';
   }
 }

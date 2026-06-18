@@ -13,17 +13,22 @@
     "deploy": "powershell -ExecutionPolicy Bypass -File deploy.ps1"
   },
   "dependencies": {
+    "@ai-sdk/google": "^3.0.80",
+    "@ai-sdk/openai": "^3.0.67",
     "@google/gemini-cli": "^0.42.0",
     "@google/generative-ai": "^0.24.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@octokit/auth-app": "^8.2.0",
     "@octokit/rest": "^21.0.0",
+    "@openai/codex": "^0.140.0",
+    "ai": "^6.0.193",
     "better-sqlite3": "^11.0.0",
     "botbuilder": "^4.23.0",
     "chrono-node": "^2.7.0",
     "discord.js": "^14.16.0",
     "dotenv": "^16.4.0",
-    "express": "^4.21.0"
+    "express": "^4.21.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

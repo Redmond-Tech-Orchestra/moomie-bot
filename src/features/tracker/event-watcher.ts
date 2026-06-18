@@ -1,5 +1,6 @@
 import type { Client, TextChannel, CategoryChannel } from 'discord.js';
 import { ChannelType } from 'discord.js';
+import { z } from 'zod';
 import { parseChannelName, computeEventDates } from './parse-channel.js';
 import {
   getEventByChannelId,
@@ -12,7 +13,8 @@ import {
   getOrphanItems,
   reassignItems,
 } from './store.js';
-import { PERFORMANCES_CATEGORY_ID, ARCHIVED_CATEGORY_ID, DISCORD_GUILD_ID, MODEL_DEDUP, geminiUrl } from '../../config.js';
+import { PERFORMANCES_CATEGORY_ID, ARCHIVED_CATEGORY_ID, DISCORD_GUILD_ID, modelFor } from '../../config.js';
+import { generateLlmObject, hasLlmKey } from '../../llm.js';
 import { loadPrompt } from '../../prompts/load-prompt.js';
 import { createLogger } from '../../logger.js';
 
@@ -286,6 +288,13 @@ function formatDisplayDate(isoDate: string): string {
 
 // ─── Orphan Item Attribution ─────────────────────────────────────────────────
 
+const attributionSchema = z.object({
+  attributions: z.array(z.object({
+    item_id: z.number(),
+    reason: z.string(),
+  })),
+});
+
 /**
  * When a new event is created, check if any unassigned ("org-wide") items
  * should be attributed to it. Uses an LLM to match based on description.
@@ -297,8 +306,7 @@ async function attributeOrphansToEvent(eventId: number): Promise<void> {
   const event = getEventById(eventId);
   if (!event) return;
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return;
+  if (!hasLlmKey()) return;
 
   const orphanList = orphans.map((i) => {
     const owner = i.owner_name ? ` (owner: ${i.owner_name})` : '';
@@ -314,28 +322,11 @@ async function attributeOrphansToEvent(eventId: number): Promise<void> {
   }, true); // skip persona — this is a mechanical task
 
   try {
-    const res = await fetch(`${geminiUrl(MODEL_DEDUP)}?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { responseMimeType: 'application/json' },
-      }),
+    const { object: result, inputTokens, outputTokens } = await generateLlmObject({
+      role: 'dedup',
+      prompt,
+      schema: attributionSchema,
     });
-
-    if (!res.ok) {
-      log.error(`Orphan attribution API error ${res.status}`);
-      return;
-    }
-
-    const data = await res.json() as {
-      candidates?: { content?: { parts?: { text?: string }[] } }[];
-      usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
-    };
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-    if (!text) return;
-
-    const result = JSON.parse(text) as { attributions: { item_id: number; reason: string }[] };
     if (!result.attributions?.length) return;
 
     // Validate IDs — only reassign items that are actually orphans
@@ -358,12 +349,12 @@ async function attributeOrphansToEvent(eventId: number): Promise<void> {
       type: 'attribution',
       channel_id: event.channel_id ?? undefined,
       channel_name: event.channel_name ?? undefined,
-      model: MODEL_DEDUP,
+      model: modelFor('dedup'),
       input_summary: `${orphans.length} orphans, event: ${event.name}`,
-      output_json: text,
+      output_json: JSON.stringify(result),
       result: `${validIds.length} attributed`,
-      tokens_in: data.usageMetadata?.promptTokenCount,
-      tokens_out: data.usageMetadata?.candidatesTokenCount,
+      tokens_in: inputTokens,
+      tokens_out: outputTokens,
     });
   } catch (err) {
     log.error('Orphan attribution failed:', err);

@@ -119,7 +119,7 @@ export async function executeFeedback(opts: FeedbackOptions): Promise<string> {
     `4. Determine the root cause (prompt issue, tool logic, extraction bug, etc.)`,
     '',
     `### Fix Guidelines`,
-    `- This is the moomie-bot codebase (TypeScript, discord.js, Gemini LLM)`,
+    `- This is the moomie-bot codebase (TypeScript, discord.js, provider-agnostic LLM layer via the Vercel AI SDK)`,
     `- Only modify files relevant to the fix`,
     `- If the fix involves prompt wording, update the .md files in src/prompts/`,
     `- If the fix involves code logic, update the relevant .ts files in src/`,
