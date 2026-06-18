@@ -21,6 +21,9 @@ const googleProvider = createGoogleGenerativeAI({
 });
 const openaiProvider = createOpenAI({
   apiKey: process.env.OPENAI_API_KEY,
+  // Optional override for OpenAI-compatible gateways (e.g. GitHub Models,
+  // Azure OpenAI, a local Ollama). Leave unset to hit api.openai.com.
+  baseURL: process.env.OPENAI_BASE_URL || undefined,
 });
 
 /** True when the API key for the selected provider is present in env. */
@@ -39,7 +42,13 @@ export function getModel(role: LlmRole): LanguageModel {
   const name = modelFor(role);
   switch (LLM_PROVIDER) {
     case 'openai':
-      return openaiProvider(name);
+      // The AI SDK's OpenAI provider defaults to the proprietary Responses
+      // API. OpenAI-compatible gateways (GitHub Models, Azure, Ollama, …) only
+      // implement Chat Completions, so force that path when a custom baseURL
+      // is configured.
+      return process.env.OPENAI_BASE_URL
+        ? openaiProvider.chat(name)
+        : openaiProvider(name);
     case 'gemini':
       return googleProvider(name);
     default:
