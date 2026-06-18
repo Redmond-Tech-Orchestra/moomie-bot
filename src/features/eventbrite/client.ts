@@ -71,6 +71,15 @@ class EventbriteClient {
     return this.request<T>(path);
   }
 
+  /** POST JSON to a single endpoint. Path may be a full path or include query. */
+  async post<T = unknown>(path: string, body: unknown): Promise<T> {
+    return this.request<T>(path, 0, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
   /**
    * GET a paginated endpoint and return the merged array under `itemsKey`.
    * Parallelizes pages 2..N via `?page=N`.
@@ -99,14 +108,15 @@ class EventbriteClient {
 
   // ─── internals ─────────────────────────────────────────────────────────────
 
-  private async request<T>(path: string, attempt = 0): Promise<T> {
+  private async request<T>(path: string, attempt = 0, init: RequestInit = {}): Promise<T> {
     await this.maybeTrickle();
 
     const url = path.startsWith('http') ? path : `${API_BASE}${path}`;
     let res: Response;
     try {
       res = await fetch(url, {
-        headers: { Authorization: `Bearer ${this.token}` },
+        ...init,
+        headers: { Authorization: `Bearer ${this.token}`, ...(init.headers ?? {}) },
       });
     } catch (err) {
       // Network error — exp backoff
@@ -114,7 +124,7 @@ class EventbriteClient {
         const wait = backoffMs(attempt);
         log.warn(`Network error on ${path}, retrying in ${wait}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
         await sleep(wait);
-        return this.request<T>(path, attempt + 1);
+        return this.request<T>(path, attempt + 1, init);
       }
       throw err;
     }
@@ -125,7 +135,7 @@ class EventbriteClient {
       const wait = Math.max(1000, this.rate.resetAt - Date.now()) + Math.floor(Math.random() * 500);
       log.warn(`Rate-limited on ${path}, sleeping ${Math.round(wait / 1000)}s before retry`);
       await sleep(wait);
-      if (attempt < MAX_RETRIES) return this.request<T>(path, attempt + 1);
+      if (attempt < MAX_RETRIES) return this.request<T>(path, attempt + 1, init);
       throw new EventbriteError(`Rate-limited (429) after ${MAX_RETRIES} retries: ${path}`, 429);
     }
 
@@ -134,7 +144,7 @@ class EventbriteClient {
         const wait = backoffMs(attempt);
         log.warn(`HTTP ${res.status} on ${path}, retrying in ${wait}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
         await sleep(wait);
-        return this.request<T>(path, attempt + 1);
+        return this.request<T>(path, attempt + 1, init);
       }
     }
 

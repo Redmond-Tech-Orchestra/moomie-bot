@@ -181,6 +181,7 @@ export const toolDeclarations = [
       properties: {
         question: { type: 'string', description: 'The analytical question, in plain English.' },
         context: { type: 'string', description: 'Optional extra context from the conversation that the analyst should know (e.g. specific event IDs or filters the user mentioned).' },
+        playbook: { type: 'string', enum: ['sales_health_check', 'traffic_conversion_analysis', 'source_gap_analysis', 'capacity_projection', 'weekday_venue_hypothesis_analysis'], description: 'Optional analysis playbook to steer common Eventbrite analyses.' },
       },
       required: ['question'],
     },
@@ -283,6 +284,7 @@ const toolSchemas: Record<string, z.ZodTypeAny> = {
   analyze_eventbrite: z.object({
     question: z.string().describe('The analytical question, in plain English.'),
     context: z.string().optional().describe('Optional extra context from the conversation that the analyst should know (e.g. specific event IDs or filters the user mentioned).'),
+    playbook: z.enum(['sales_health_check', 'traffic_conversion_analysis', 'source_gap_analysis', 'capacity_projection', 'weekday_venue_hypothesis_analysis']).optional().describe('Optional analysis playbook to steer common Eventbrite analyses.'),
   }),
 };
 
@@ -531,8 +533,9 @@ async function analyzeEventbriteTool(args: Record<string, unknown>, ctx: ToolCal
   const question = args.question as string;
   if (!question) return JSON.stringify({ error: 'question is required' });
   const context = args.context as string | undefined;
+  const playbook = args.playbook as string | undefined;
   try {
-    const result = await analyzeEventbrite(question, context);
+    const result = await analyzeEventbrite(question, context, playbook);
     // Surface any artifacts (CSV exports, chart PNGs) up to the chat layer so
     // they get attached to the Discord reply.
     const filesProduced: string[] = [];

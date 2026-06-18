@@ -25,6 +25,7 @@ import { getModel, hasLlmKey } from '../../llm.js';
 import { createLogger } from '../../logger.js';
 import { runPython } from '../sandbox/python-runner.js';
 import { listActiveEvents } from './live.js';
+import { eventbriteKernelPrelude } from './python-kernels.js';
 import { snapshotEvent } from './snapshot.js';
 
 const log = createLogger('Eventbrite.analyze');
@@ -59,6 +60,7 @@ Directory tree:
           reports/
             sales.json                (may be absent)
             attendees.json            (may be absent)
+            traffic_conversion.json   (may be absent)
 
 ## File contents
 
@@ -182,6 +184,17 @@ Directory tree:
   \`attendees.num_attendees\`, \`attendees.num_orders\`. \`data\` array has
   per-grouping rows (group_by=ticket → one row per ticket class).
 
+- **reports/traffic_conversion.json**: Eventbrite dashboard traffic/conversion
+  dataset from \`/organizations/{org}/reports/datasets/traffic_conversion/\`.
+  Top-level envelope has \`source\`, \`retrieved_at\`, \`event_id\`, \`series_id\`,
+  \`event_report\`, and \`series_report\`. Each report has \`report_event_id\`,
+  \`request\`, \`last_updated\`, \`object_count\`, \`totals\`, and \`items\`.
+  The report rows are grouped by \`traffic_date_daily\` and \`affiliate_category\`
+  with \`traffic_pageviews__sum\`, \`attendee_quantity__sum\`, and
+  \`orders_sold__sum\`. For Eventbrite series, page views usually live on the
+  \`series_report\` while attendees/orders live on each child event's
+  \`event_report\`; use the appropriate level for reach vs conversion analysis.
+
 ## Conventions
 
 - All money values are returned as **strings** in Eventbrite's "major_value"
@@ -272,7 +285,7 @@ export interface AnalyzeResult {
 
 // ─── Public entry point ──────────────────────────────────────────────────────
 
-export async function analyze(question: string, context?: string): Promise<AnalyzeResult> {
+export async function analyze(question: string, context?: string, playbook?: string): Promise<AnalyzeResult> {
   const t0 = Date.now();
   if (!hasLlmKey()) {
     return errorResult(t0, 'LLM API key is not set');
@@ -286,7 +299,8 @@ export async function analyze(question: string, context?: string): Promise<Analy
   }
 
   const systemPrompt = buildSystemPrompt(dataDirAbs);
-  const contextParts = [context, liveSnapshotContext].filter((part): part is string => !!part?.trim());
+  const playbookContext = playbook ? `Requested Eventbrite analysis playbook: ${playbook}` : null;
+  const contextParts = [context, liveSnapshotContext, playbookContext].filter((part): part is string => !!part?.trim());
   const userMessage = contextParts.length
     ? `${question}\n\nAdditional context:\n${contextParts.join('\n\n')}`
     : question;
@@ -310,6 +324,7 @@ export async function analyze(question: string, context?: string): Promise<Analy
         iter++;
         const result = await runPython({
           code,
+          prelude: eventbriteKernelPrelude(),
           timeoutMs: PYTHON_TIMEOUT_MS,
           env: { EVENTBRITE_DATA_DIR: dataDirAbs },
           collectFiles: { extensions: ['.csv', '.png'] },
@@ -406,6 +421,7 @@ A user has asked a question that requires analysis over the archive on disk. You
 1. **run_python_code(code, reason?)** — runs Python in a sandbox. \`os.environ['EVENTBRITE_DATA_DIR']\` is set to:
    \`${dataDirAbs}\`
    You see only stdout/stderr/exit_code back. No network. pandas/numpy preinstalled.
+  A trusted helper module is preloaded: \`eventbrite_kernels\`. Prefer importing it for recurring calculations.
 
 2. **finalize(answer, summary?)** — submit your final natural-language answer.
 
@@ -416,6 +432,16 @@ Active/live events may also appear in the archive with \`_meta.frozen == false\`
 \`_meta.synced_at\`. Those are current read-only snapshots captured immediately before this
 analysis. Use them for questions about current ticket sales, registration pace, source/affiliate
 mix, or comparisons between live events and historical frozen events.
+
+Default analysis behavior for active/upcoming events:
+- Compare current events to historical baselines at the same t-minus point, not only against final totals.
+- Split free, paid, reserved, donation, and ADA tickets before drawing conclusions.
+- For Eventbrite series, use series-level page views for reach and child event orders/tickets for conversion.
+- Decompose performance into reach/page views, order conversion, and ticket conversion.
+- Treat paid-ticket curves as more backloaded than free-ticket curves; paid shortfalls around 4 weeks out are softer warnings than free-ticket shortfalls.
+
+Useful helper imports:
+\`from eventbrite_kernels import event_ids, meta, event, active_attendees, ticket_bucket_summary, registration_curve, traffic_totals, series_children, series_traffic_totals, tminus_days, cutoff_at_tminus\`
 
 Be concise. Don't print enormous dataframes; aggregate first. For raw data
 the user can take away, write a CSV file to the current directory rather

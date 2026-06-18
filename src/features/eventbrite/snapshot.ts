@@ -15,6 +15,7 @@
  *     display_settings.json
  *     reports/sales.json        — /organizations/{org}/reports/sales/?event_ids={id}
  *     reports/attendees.json    — /organizations/{org}/reports/attendees/?event_ids={id}&group_by=ticket
+ *     reports/traffic_conversion.json — /organizations/{org}/reports/datasets/traffic_conversion/ filtered by event_id
  *
  * `frozen=true` means the event has been over for longer than LATE_CHECKIN_MARGIN_MS
  * and no further snapshots are needed. Frozen events are skipped by syncArchive unless
@@ -60,6 +61,24 @@ interface EventbriteEvent {
   name?: { text?: string };
   end?: { utc?: string };
   status?: string;
+  series_id?: string;
+}
+
+interface TrafficConversionRow {
+  traffic_date_daily?: string;
+  affiliate_category?: string;
+  traffic_pageviews__sum?: number;
+  attendee_quantity__sum?: number;
+  orders_sold__sum?: number;
+}
+
+interface TrafficConversionResponse {
+  pagination?: { continuation?: string; has_more_items?: boolean };
+  last_updated?: string;
+  launch_tc_conversion_rate?: boolean;
+  has_add_on?: boolean;
+  show_no_backfill_banner?: boolean;
+  data?: TrafficConversionRow[];
 }
 
 export function eventDir(eventId: string): string {
@@ -159,6 +178,7 @@ export async function snapshotEvent(eventId: string): Promise<SnapshotResult> {
       'reports/attendees.json',
       { optional: true },
     ),
+    grabTrafficConversion(eventId, eventBlob.series_id, dir, filesWritten, warnings),
   ]);
 
   // 3. Write meta.
@@ -201,4 +221,123 @@ export function isFrozen(eventEndIso: string): boolean {
   const end = Date.parse(eventEndIso);
   if (Number.isNaN(end)) return false;
   return Date.now() - end > LATE_CHECKIN_MARGIN_MS;
+}
+
+async function grabTrafficConversion(
+  eventId: string,
+  seriesId: string | undefined,
+  dir: string,
+  filesWritten: string[],
+  warnings: string[],
+): Promise<void> {
+  const client = getClient();
+  const source = `/organizations/${EVENTBRITE_ORG_ID}/reports/datasets/traffic_conversion/`;
+
+  try {
+    const eventReport = await fetchTrafficConversionReport(client, source, eventId);
+    const seriesReport = seriesId && seriesId !== eventId
+      ? await fetchTrafficConversionReport(client, source, seriesId)
+      : null;
+
+    const envelope = {
+      source,
+      retrieved_at: new Date().toISOString(),
+      event_id: eventId,
+      series_id: seriesId ?? null,
+      event_report: eventReport,
+      series_report: seriesReport,
+    };
+    await writeFile(join(dir, 'reports', 'traffic_conversion.json'), JSON.stringify(envelope, null, 2), 'utf8');
+    filesWritten.push('reports/traffic_conversion.json');
+  } catch (err) {
+    if (err instanceof EventbriteError && (err.status === 400 || err.status === 404 || err.status === 500)) {
+      warnings.push(`reports/traffic_conversion.json: ${err.status} (optional, skipped)`);
+      return;
+    }
+    throw err;
+  }
+}
+
+async function fetchTrafficConversionReport(
+  client: ReturnType<typeof getClient>,
+  source: string,
+  reportEventId: string,
+): Promise<{
+  report_event_id: string;
+  request: Record<string, unknown>;
+  last_updated?: string;
+  page_count: number;
+  object_count: number;
+  totals: ReturnType<typeof summarizeTrafficConversion>;
+  items: TrafficConversionRow[];
+}> {
+  const request = {
+    aggregations: [
+      { field: 'traffic_pageviews', method: 'sum', alias: 'traffic_pageviews__sum' },
+      { field: 'attendee_quantity', method: 'sum', alias: 'attendee_quantity__sum' },
+      { field: 'orders_sold', method: 'sum', alias: 'orders_sold__sum' },
+    ],
+    sort_by: [{ field: 'traffic_date_daily', method: 'asc' }],
+    group_by: [{ field: 'traffic_date_daily' }, { field: 'affiliate_category' }],
+    filters: [{ field: 'event_id', operator: 'in', value: [reportEventId] }],
+    having: [],
+    select: [],
+    page_size: 310,
+    report: 'traffic_conversion',
+    timezone: 'America/Los_Angeles',
+  };
+
+  const rows: TrafficConversionRow[] = [];
+  let continuation: string | undefined;
+  let lastUpdated: string | undefined;
+  let pages = 0;
+
+  do {
+    const body = continuation ? { ...request, continuation } : request;
+    const response = await client.post<TrafficConversionResponse>(source, body);
+    rows.push(...(response.data ?? []));
+    lastUpdated = response.last_updated ?? lastUpdated;
+    continuation = response.pagination?.has_more_items ? response.pagination.continuation : undefined;
+    pages += 1;
+  } while (continuation && pages < 50);
+
+  return {
+    report_event_id: reportEventId,
+    request,
+    last_updated: lastUpdated,
+    page_count: pages,
+    object_count: rows.length,
+    totals: summarizeTrafficConversion(rows),
+    items: rows,
+  };
+}
+
+function summarizeTrafficConversion(rows: TrafficConversionRow[]): {
+  traffic_pageviews: number;
+  attendee_quantity: number;
+  orders_sold: number;
+  by_affiliate_category: Array<{ affiliate_category: string; traffic_pageviews: number; attendee_quantity: number; orders_sold: number }>;
+} {
+  const totals = { traffic_pageviews: 0, attendee_quantity: 0, orders_sold: 0 };
+  const byAffiliate = new Map<string, { traffic_pageviews: number; attendee_quantity: number; orders_sold: number }>();
+  for (const row of rows) {
+    const pageviews = Number(row.traffic_pageviews__sum ?? 0);
+    const attendees = Number(row.attendee_quantity__sum ?? 0);
+    const orders = Number(row.orders_sold__sum ?? 0);
+    totals.traffic_pageviews += pageviews;
+    totals.attendee_quantity += attendees;
+    totals.orders_sold += orders;
+    const affiliate = row.affiliate_category || '(none)';
+    const current = byAffiliate.get(affiliate) ?? { traffic_pageviews: 0, attendee_quantity: 0, orders_sold: 0 };
+    current.traffic_pageviews += pageviews;
+    current.attendee_quantity += attendees;
+    current.orders_sold += orders;
+    byAffiliate.set(affiliate, current);
+  }
+  return {
+    ...totals,
+    by_affiliate_category: [...byAffiliate.entries()]
+      .map(([affiliate_category, values]) => ({ affiliate_category, ...values }))
+      .sort((a, b) => b.traffic_pageviews - a.traffic_pageviews),
+  };
 }
