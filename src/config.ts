@@ -58,7 +58,7 @@ const MODELS: Record<string, Record<LlmRole, string>> = {
   },
   openai: {
     chat: process.env.OPENAI_MODEL_CHAT || 'gpt-5.4-mini',
-    extract: process.env.OPENAI_MODEL_EXTRACT || 'gpt-5.4',
+    extract: process.env.OPENAI_MODEL_EXTRACT || 'gpt-5.5',
     dedup: process.env.OPENAI_MODEL_DEDUP || 'gpt-5.4-mini',
   },
 };
