@@ -15,8 +15,7 @@
  *     display_settings.json
  *     reports/sales.json        — /organizations/{org}/reports/sales/?event_ids={id}
  *     reports/attendees.json    — /organizations/{org}/reports/attendees/?event_ids={id}&group_by=ticket
- *     reports/traffic.json      — /organizations/{org}/reports/traffic/?event_ids={id}
- *     reports/traffic_sales_channel_lvl_*.json — same traffic report grouped by Eventbrite sales channel levels
+ *     reports/traffic_conversion.json — /organizations/{org}/reports/datasets/traffic_conversion/ filtered by event_id
  *
  * `frozen=true` means the event has been over for longer than LATE_CHECKIN_MARGIN_MS
  * and no further snapshots are needed. Frozen events are skipped by syncArchive unless
@@ -62,6 +61,41 @@ interface EventbriteEvent {
   name?: { text?: string };
   end?: { utc?: string };
   status?: string;
+}
+
+const TRAFFIC_CONVERSION_SELECT = [
+  'event_id',
+  'event_name',
+  'event_start_date',
+  'event_status',
+  'traffic_date',
+  'affiliate_code',
+  'traffic_source',
+  'traffic_pageviews',
+  'attendee_quantity',
+  'orders_sold',
+] as const;
+
+interface TrafficConversionRow {
+  event_id?: string | number;
+  event_name?: string;
+  event_start_date?: string;
+  event_status?: string;
+  traffic_date?: string;
+  affiliate_code?: string;
+  traffic_source?: string | null;
+  traffic_pageviews?: number;
+  attendee_quantity?: number;
+  orders_sold?: number;
+}
+
+interface TrafficConversionResponse {
+  pagination?: { continuation?: string; has_more_items?: boolean };
+  last_updated?: string;
+  launch_tc_conversion_rate?: boolean;
+  has_add_on?: boolean;
+  show_no_backfill_banner?: boolean;
+  data?: TrafficConversionRow[];
 }
 
 export function eventDir(eventId: string): string {
@@ -161,26 +195,7 @@ export async function snapshotEvent(eventId: string): Promise<SnapshotResult> {
       'reports/attendees.json',
       { optional: true },
     ),
-    grab(
-      `/organizations/${EVENTBRITE_ORG_ID}/reports/traffic/?event_ids=${eventId}`,
-      'reports/traffic.json',
-      { optional: true },
-    ),
-    grab(
-      `/organizations/${EVENTBRITE_ORG_ID}/reports/traffic/?event_ids=${eventId}&group_by=sales_channel_lvl_1`,
-      'reports/traffic_sales_channel_lvl_1.json',
-      { optional: true },
-    ),
-    grab(
-      `/organizations/${EVENTBRITE_ORG_ID}/reports/traffic/?event_ids=${eventId}&group_by=sales_channel_lvl_2`,
-      'reports/traffic_sales_channel_lvl_2.json',
-      { optional: true },
-    ),
-    grab(
-      `/organizations/${EVENTBRITE_ORG_ID}/reports/traffic/?event_ids=${eventId}&group_by=sales_channel_lvl_3`,
-      'reports/traffic_sales_channel_lvl_3.json',
-      { optional: true },
-    ),
+    grabTrafficConversion(eventId, dir, filesWritten, warnings),
   ]);
 
   // 3. Write meta.
@@ -223,4 +238,86 @@ export function isFrozen(eventEndIso: string): boolean {
   const end = Date.parse(eventEndIso);
   if (Number.isNaN(end)) return false;
   return Date.now() - end > LATE_CHECKIN_MARGIN_MS;
+}
+
+async function grabTrafficConversion(
+  eventId: string,
+  dir: string,
+  filesWritten: string[],
+  warnings: string[],
+): Promise<void> {
+  const client = getClient();
+  const source = `/organizations/${EVENTBRITE_ORG_ID}/reports/datasets/traffic_conversion/`;
+  const rows: TrafficConversionRow[] = [];
+  const request = {
+    select: [...TRAFFIC_CONVERSION_SELECT],
+    filters: [{ field: 'event_id', operator: '=', value: eventId }],
+  };
+  let continuation: string | undefined;
+  let lastUpdated: string | undefined;
+  let pages = 0;
+
+  try {
+    do {
+      const body = continuation ? { ...request, continuation } : request;
+      const response = await client.post<TrafficConversionResponse>(source, body);
+      rows.push(...(response.data ?? []));
+      lastUpdated = response.last_updated ?? lastUpdated;
+      continuation = response.pagination?.has_more_items ? response.pagination.continuation : undefined;
+      pages += 1;
+    } while (continuation && pages < 50);
+
+    if (continuation) {
+      warnings.push('reports/traffic_conversion.json: stopped after 50 pages with more items available');
+    }
+
+    const envelope = {
+      source,
+      retrieved_at: new Date().toISOString(),
+      request,
+      last_updated: lastUpdated,
+      page_count: pages,
+      object_count: rows.length,
+      totals: summarizeTrafficConversion(rows),
+      items: rows,
+    };
+    await writeFile(join(dir, 'reports', 'traffic_conversion.json'), JSON.stringify(envelope, null, 2), 'utf8');
+    filesWritten.push('reports/traffic_conversion.json');
+  } catch (err) {
+    if (err instanceof EventbriteError && (err.status === 400 || err.status === 404 || err.status === 500)) {
+      warnings.push(`reports/traffic_conversion.json: ${err.status} (optional, skipped)`);
+      return;
+    }
+    throw err;
+  }
+}
+
+function summarizeTrafficConversion(rows: TrafficConversionRow[]): {
+  traffic_pageviews: number;
+  attendee_quantity: number;
+  orders_sold: number;
+  by_affiliate_code: Array<{ affiliate_code: string; traffic_pageviews: number; attendee_quantity: number; orders_sold: number }>;
+} {
+  const totals = { traffic_pageviews: 0, attendee_quantity: 0, orders_sold: 0 };
+  const byAffiliate = new Map<string, { traffic_pageviews: number; attendee_quantity: number; orders_sold: number }>();
+  for (const row of rows) {
+    const pageviews = Number(row.traffic_pageviews ?? 0);
+    const attendees = Number(row.attendee_quantity ?? 0);
+    const orders = Number(row.orders_sold ?? 0);
+    totals.traffic_pageviews += pageviews;
+    totals.attendee_quantity += attendees;
+    totals.orders_sold += orders;
+    const affiliate = row.affiliate_code || '(none)';
+    const current = byAffiliate.get(affiliate) ?? { traffic_pageviews: 0, attendee_quantity: 0, orders_sold: 0 };
+    current.traffic_pageviews += pageviews;
+    current.attendee_quantity += attendees;
+    current.orders_sold += orders;
+    byAffiliate.set(affiliate, current);
+  }
+  return {
+    ...totals,
+    by_affiliate_code: [...byAffiliate.entries()]
+      .map(([affiliate_code, values]) => ({ affiliate_code, ...values }))
+      .sort((a, b) => b.traffic_pageviews - a.traffic_pageviews),
+  };
 }

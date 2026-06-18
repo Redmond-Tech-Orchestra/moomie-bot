@@ -59,10 +59,7 @@ Directory tree:
           reports/
             sales.json                (may be absent)
             attendees.json            (may be absent)
-            traffic.json              (may be absent)
-            traffic_sales_channel_lvl_1.json  (may be absent)
-            traffic_sales_channel_lvl_2.json  (may be absent)
-            traffic_sales_channel_lvl_3.json  (may be absent)
+            traffic_conversion.json   (may be absent)
 
 ## File contents
 
@@ -186,14 +183,16 @@ Directory tree:
   \`attendees.num_attendees\`, \`attendees.num_orders\`. \`data\` array has
   per-grouping rows (group_by=ticket → one row per ticket class).
 
-- **reports/traffic*.json**: Eventbrite traffic/page-view reports from
-  \`/organizations/{org}/reports/traffic/?event_ids={id}\`, optionally grouped by
-  \`sales_channel_lvl_1\`, \`sales_channel_lvl_2\`, or \`sales_channel_lvl_3\`.
-  Top-level fields usually include \`timezone\`, \`event_ids\`, \`data\`,
-  \`topic_totals\`, and \`totals.page_views\`. Treat zeros carefully: Eventbrite
-  may return \`totals.page_views == 0\` through the API even when the dashboard has
-  richer page-view data, so distinguish "API reports zero/unavailable" from
-  "audience definitely saw zero pages".
+- **reports/traffic_conversion.json**: Eventbrite dashboard traffic/conversion
+  dataset from \`/organizations/{org}/reports/datasets/traffic_conversion/\`,
+  filtered to this event. Top-level envelope has \`source\`, \`retrieved_at\`,
+  \`last_updated\`, \`object_count\`, \`totals\`, and \`items\`. Each item has
+  \`event_id\`, \`event_name\`, \`traffic_date\`, \`affiliate_code\`,
+  \`traffic_source\`, \`traffic_pageviews\`, \`attendee_quantity\`, and
+  \`orders_sold\`. The archive totals are sums over the returned raw rows. If a
+  user cites a different Eventbrite dashboard aggregate, prefer the dashboard
+  number and call out the discrepancy; Eventbrite's dashboard may use an
+  aggregate query shape that differs from the raw row dataset.
 
 ## Conventions
 
