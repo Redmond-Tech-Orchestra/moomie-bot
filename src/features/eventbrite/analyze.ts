@@ -184,15 +184,15 @@ Directory tree:
   per-grouping rows (group_by=ticket → one row per ticket class).
 
 - **reports/traffic_conversion.json**: Eventbrite dashboard traffic/conversion
-  dataset from \`/organizations/{org}/reports/datasets/traffic_conversion/\`,
-  filtered to this event. Top-level envelope has \`source\`, \`retrieved_at\`,
-  \`last_updated\`, \`object_count\`, \`totals\`, and \`items\`. Each item has
-  \`event_id\`, \`event_name\`, \`traffic_date\`, \`affiliate_code\`,
-  \`traffic_source\`, \`traffic_pageviews\`, \`attendee_quantity\`, and
-  \`orders_sold\`. The archive totals are sums over the returned raw rows. If a
-  user cites a different Eventbrite dashboard aggregate, prefer the dashboard
-  number and call out the discrepancy; Eventbrite's dashboard may use an
-  aggregate query shape that differs from the raw row dataset.
+  dataset from \`/organizations/{org}/reports/datasets/traffic_conversion/\`.
+  Top-level envelope has \`source\`, \`retrieved_at\`, \`event_id\`, \`series_id\`,
+  \`event_report\`, and \`series_report\`. Each report has \`report_event_id\`,
+  \`request\`, \`last_updated\`, \`object_count\`, \`totals\`, and \`items\`.
+  The report rows are grouped by \`traffic_date_daily\` and \`affiliate_category\`
+  with \`traffic_pageviews__sum\`, \`attendee_quantity__sum\`, and
+  \`orders_sold__sum\`. For Eventbrite series, page views usually live on the
+  \`series_report\` while attendees/orders live on each child event's
+  \`event_report\`; use the appropriate level for reach vs conversion analysis.
 
 ## Conventions
 
