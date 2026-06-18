@@ -59,6 +59,10 @@ Directory tree:
           reports/
             sales.json                (may be absent)
             attendees.json            (may be absent)
+            traffic.json              (may be absent)
+            traffic_sales_channel_lvl_1.json  (may be absent)
+            traffic_sales_channel_lvl_2.json  (may be absent)
+            traffic_sales_channel_lvl_3.json  (may be absent)
 
 ## File contents
 
@@ -181,6 +185,15 @@ Directory tree:
 - **reports/attendees.json**: Aggregated attendee counts. Top-level has
   \`attendees.num_attendees\`, \`attendees.num_orders\`. \`data\` array has
   per-grouping rows (group_by=ticket → one row per ticket class).
+
+- **reports/traffic*.json**: Eventbrite traffic/page-view reports from
+  \`/organizations/{org}/reports/traffic/?event_ids={id}\`, optionally grouped by
+  \`sales_channel_lvl_1\`, \`sales_channel_lvl_2\`, or \`sales_channel_lvl_3\`.
+  Top-level fields usually include \`timezone\`, \`event_ids\`, \`data\`,
+  \`topic_totals\`, and \`totals.page_views\`. Treat zeros carefully: Eventbrite
+  may return \`totals.page_views == 0\` through the API even when the dashboard has
+  richer page-view data, so distinguish "API reports zero/unavailable" from
+  "audience definitely saw zero pages".
 
 ## Conventions
 

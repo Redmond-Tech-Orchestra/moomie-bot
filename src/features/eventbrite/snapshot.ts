@@ -15,6 +15,8 @@
  *     display_settings.json
  *     reports/sales.json        — /organizations/{org}/reports/sales/?event_ids={id}
  *     reports/attendees.json    — /organizations/{org}/reports/attendees/?event_ids={id}&group_by=ticket
+ *     reports/traffic.json      — /organizations/{org}/reports/traffic/?event_ids={id}
+ *     reports/traffic_sales_channel_lvl_*.json — same traffic report grouped by Eventbrite sales channel levels
  *
  * `frozen=true` means the event has been over for longer than LATE_CHECKIN_MARGIN_MS
  * and no further snapshots are needed. Frozen events are skipped by syncArchive unless
@@ -157,6 +159,26 @@ export async function snapshotEvent(eventId: string): Promise<SnapshotResult> {
     grab(
       `/organizations/${EVENTBRITE_ORG_ID}/reports/attendees/?event_ids=${eventId}&group_by=ticket`,
       'reports/attendees.json',
+      { optional: true },
+    ),
+    grab(
+      `/organizations/${EVENTBRITE_ORG_ID}/reports/traffic/?event_ids=${eventId}`,
+      'reports/traffic.json',
+      { optional: true },
+    ),
+    grab(
+      `/organizations/${EVENTBRITE_ORG_ID}/reports/traffic/?event_ids=${eventId}&group_by=sales_channel_lvl_1`,
+      'reports/traffic_sales_channel_lvl_1.json',
+      { optional: true },
+    ),
+    grab(
+      `/organizations/${EVENTBRITE_ORG_ID}/reports/traffic/?event_ids=${eventId}&group_by=sales_channel_lvl_2`,
+      'reports/traffic_sales_channel_lvl_2.json',
+      { optional: true },
+    ),
+    grab(
+      `/organizations/${EVENTBRITE_ORG_ID}/reports/traffic/?event_ids=${eventId}&group_by=sales_channel_lvl_3`,
+      'reports/traffic_sales_channel_lvl_3.json',
       { optional: true },
     ),
   ]);
