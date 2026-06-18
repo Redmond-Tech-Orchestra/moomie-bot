@@ -1,17 +1,17 @@
 /**
- * Eventbrite analytics — Pro-driven write/run/observe loop.
+ * Eventbrite analytics — LLM-driven write/run/observe loop.
  *
  * Shape:
- *   chat LLM (flash) decides this question warrants analytics
+ *   chat LLM (fast model) decides this question warrants analytics
  *     → calls `analyze_eventbrite({ question })`
  *       → this module: loops up to MAX_ITERATIONS, each iteration is a single
- *         Gemini Pro call with two function-call tools (`run_python_code`,
- *         `finalize`). Pro writes code, sees stdout/stderr, decides whether
- *         to write more or finalize.
+ *         analytics-model call with two tools (`run_python_code`,
+ *         `finalize`). The model writes code, sees stdout/stderr, decides
+ *         whether to write more or finalize.
  *     → returns { answer, transcript } to chat LLM
  *   chat LLM narrates the result for the user
  *
- * Pro never reaches the network or process secrets — its tools only do (a)
+ * The analytics model never reaches the network or process secrets — its tools only do (a)
  * "run this python", which goes through the stripped-env runner, and (b)
  * "finalize", which just returns text.
  */

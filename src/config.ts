@@ -35,16 +35,16 @@ export const MUSIC_ADMIN_ROLE = process.env.MUSIC_ADMIN_ROLE || 'Librarian';
 export const WEB_APPROVER_ROLE = process.env.WEB_APPROVER_ROLE || 'moomie:web-approvers';
 
 // Coding agent
-export const CODING_AGENT = process.env.CODING_AGENT || 'gemini';
+export const CODING_AGENT = process.env.CODING_AGENT || 'codex';
 export const AGENT_WORKSPACE = process.env.AGENT_WORKSPACE || './workspace';
 
 // Eventbrite
 export const EVENTBRITE_ORG_ID = process.env.EVENTBRITE_ORG_ID || '2020393260733';
 export const EVENTBRITE_DATA_DIR = process.env.EVENTBRITE_DATA_DIR || './data/eventbrite';
 
-// LLM provider selection. 'gemini' (default) or 'openai'. Each provider needs
-// its own API key in env (GEMINI_API_KEY / OPENAI_API_KEY).
-export const LLM_PROVIDER = (process.env.LLM_PROVIDER || 'gemini').toLowerCase();
+// LLM provider selection. 'openai' (default) or 'gemini'. Each provider needs
+// its own API key in env (OPENAI_API_KEY / GEMINI_API_KEY).
+export const LLM_PROVIDER = (process.env.LLM_PROVIDER || 'openai').toLowerCase();
 
 // Role → model mapping per provider. Roles: chat (cheap/fast), extract
 // (nuanced), dedup (cheap/fast). Override any value via env.
@@ -64,6 +64,6 @@ const MODELS: Record<string, Record<LlmRole, string>> = {
 };
 
 export function modelFor(role: LlmRole): string {
-  const provider = MODELS[LLM_PROVIDER] ?? MODELS.gemini;
+  const provider = MODELS[LLM_PROVIDER] ?? MODELS.openai;
   return provider[role];
 }

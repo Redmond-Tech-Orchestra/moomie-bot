@@ -14,7 +14,7 @@ export const name = 'digest';
 export const description = 'Structured summary of recent server activity';
 
 const DEFAULT_WINDOW = '1 week ago';
-const MAX_CONTEXT_CHARS = 80_000; // Stay well under Gemini's context window
+const MAX_CONTEXT_CHARS = 80_000; // Stay well under the model's context window
 
 export async function execute(ctx: CommandContext, args: string): Promise<void> {
   const window = args.trim() || DEFAULT_WINDOW;
@@ -39,7 +39,7 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
   }
 
   const transcript = formatTranscript(channelData);
-  const digest = await callGemini(transcript, window);
+  const digest = await generateDigest(transcript, window);
 
   // Discord has a 2000-char message limit; split if needed
   if (digest.length <= 2000) {
@@ -95,7 +95,7 @@ function formatTranscript(channels: ChannelMessages[]): string {
   return result;
 }
 
-async function callGemini(transcript: string, window: string): Promise<string> {
+async function generateDigest(transcript: string, window: string): Promise<string> {
   if (!hasLlmKey()) return '*LLM API key not configured.*';
 
   const events = getActiveEvents();

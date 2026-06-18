@@ -10,7 +10,7 @@
  *
  * What this DOES protect against:
  *   - LLM reads EVENTBRITE_PRIVATE_TOKEN, GITHUB_APP_PRIVATE_KEY_PATH,
- *     DISCORD_TOKEN, GEMINI_API_KEY, etc. via os.environ → blocked
+ *     DISCORD_TOKEN, OPENAI_API_KEY, etc. via os.environ → blocked
  *     (those env vars are not passed in)
  *
  * What this does NOT protect against:

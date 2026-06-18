@@ -273,7 +273,7 @@ async function processConversation(channelId: string, messages: BufferedMessage[
   const channelName = cachedChannel?.name;
 
   // Call the LLM
-  const result = await callGemini(transcript, eventsContext, openItemsContext, channelId, channelName);
+  const result = await extractItems(transcript, eventsContext, openItemsContext, channelId, channelName);
   if (!result) return;
 
   // Nothing actionable at all
@@ -384,7 +384,7 @@ function buildOpenItemsContext(events: TrackerEvent[]): string {
   return sections.length > 0 ? sections.join('\n\n') : 'No open items currently tracked.';
 }
 
-async function callGemini(
+async function extractItems(
   transcript: string,
   eventsContext: string,
   openItemsContext: string,

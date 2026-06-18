@@ -28,7 +28,7 @@ import { createLogger } from '../../logger.js';
 
 const log = createLogger('Chat');
 
-// ─── Tool Definitions (Gemini function calling schema) ───────────────────────
+// ─── Tool Definitions (JSON Schema for descriptions/params) ──────────────────
 
 export const toolDeclarations = [
   {
@@ -224,7 +224,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
 }
 
 // ─── AI SDK Tool Adapters ────────────────────────────────────────────────────
-// Zod input schemas mirroring the Gemini function declarations above. Each tool
+// Zod input schemas mirroring the tool declarations above. Each tool
 // delegates to executeTool() so the provider-agnostic AI SDK loop can drive the
 // same implementations.
 

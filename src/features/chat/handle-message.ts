@@ -62,7 +62,8 @@ export type OnChatProgress = (snap: ChatProgress) => void | Promise<void>;
 
 /**
  * Handle a natural language message directed at Moomie.
- * Sends to Gemini with tool declarations, loops on function calls until a text response.
+ * Sends to the configured LLM with tool declarations, looping on tool calls
+ * until a text response.
  */
 export async function handleChatMessage(
   message: ChatMessage,
@@ -144,7 +145,8 @@ export async function handleChatMessage(
       tools: buildChatTools(toolCtx),
       stopWhen: stepCountIs(MAX_TOOL_ROUNDS),
       // Surface the model's reasoning as a live "thinking…" trail where the
-      // provider supports it (Gemini). Budget caps worst-case cost.
+      // provider supports it (Gemini-only option; ignored by other providers).
+      // Budget caps worst-case cost.
       providerOptions: {
         google: { thinkingConfig: { includeThoughts: true, thinkingBudget: 2048 } },
       },
