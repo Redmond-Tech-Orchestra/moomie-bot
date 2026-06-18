@@ -31,6 +31,8 @@ import { extname, join } from 'node:path';
 export interface RunPythonOptions {
   /** Python source to execute. Passed via `-c`. */
   code: string;
+  /** Python source prepended before `code`. Used for trusted helper kernels. */
+  prelude?: string;
   /** Hard wall-clock timeout in ms. Default 60s. */
   timeoutMs?: number;
   /** Cap on bytes captured per stream (stdout + stderr). Default 64 KB each. */
@@ -156,7 +158,8 @@ export async function runPython(opts: RunPythonOptions): Promise<RunPythonResult
   const t0 = Date.now();
 
   try {
-    const child = spawn('python3', ['-I', '-c', opts.code], {
+    const source = opts.prelude ? `${opts.prelude}\n\n${opts.code}` : opts.code;
+    const child = spawn('python3', ['-I', '-c', source], {
       cwd,
       env: buildSandboxEnv(opts.env),
       stdio: ['ignore', 'pipe', 'pipe'],
