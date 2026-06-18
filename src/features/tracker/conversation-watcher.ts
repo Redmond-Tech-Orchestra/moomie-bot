@@ -567,7 +567,7 @@ function findCompletionMatch(
   completion: ExtractedCompletion,
   events: TrackerEvent[],
 ): TrackerItem | null {
-  // If Gemini returned a tracker item ID, use it directly
+  // If the LLM returned a tracker item ID, use it directly
   if (completion.item_id) {
     for (const event of events) {
       const items = getOpenItemsForEvent(event.id);
