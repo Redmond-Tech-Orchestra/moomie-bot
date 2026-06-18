@@ -1,22 +1,40 @@
-// Ad-hoc smoke test for the provider-agnostic LLM layer against an
-// OpenAI-compatible endpoint (defaults wired for GitHub Models).
+// Ad-hoc smoke test for the provider-agnostic LLM layer.
+//
+// Loads .env first, then drives the compiled dist/llm.js. Two modes:
+//   node scripts/smoke-llm.mjs            → real OpenAI (api.openai.com) from .env
+//   node scripts/smoke-llm.mjs gh-models  → GitHub Models gateway (free; needs a
+//                                           GitHub token in GH_MODELS_TOKEN)
+//
 // Env is set BEFORE importing the module because llm.ts captures the provider
 // key/baseURL at module-init time.
+import 'dotenv/config';
 import { z } from 'zod';
 
+const mode = process.argv[2] ?? 'openai';
 process.env.LLM_PROVIDER = 'openai';
-process.env.OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://models.github.ai/inference';
-process.env.OPENAI_API_KEY = process.env.GH_MODELS_TOKEN || process.env.OPENAI_API_KEY;
-const MODEL = process.env.SMOKE_MODEL || 'openai/gpt-4o-mini';
-process.env.OPENAI_MODEL_CHAT = MODEL;
-process.env.OPENAI_MODEL_EXTRACT = MODEL;
-process.env.OPENAI_MODEL_DEDUP = MODEL;
 
-const { hasLlmKey, getModel, generateLlmText, generateLlmObject } = await import('../dist/llm.js');
+if (mode === 'gh-models') {
+  process.env.OPENAI_BASE_URL = 'https://models.github.ai/inference';
+  process.env.OPENAI_API_KEY = process.env.GH_MODELS_TOKEN || process.env.OPENAI_API_KEY;
+  const m = process.env.SMOKE_MODEL || 'openai/gpt-4o-mini';
+  process.env.OPENAI_MODEL_CHAT = m;
+  process.env.OPENAI_MODEL_EXTRACT = m;
+  process.env.OPENAI_MODEL_DEDUP = m;
+} else {
+  // Real OpenAI: ensure no gateway override leaks in from .env.
+  delete process.env.OPENAI_BASE_URL;
+  if (process.env.SMOKE_MODEL) {
+    process.env.OPENAI_MODEL_CHAT = process.env.SMOKE_MODEL;
+    process.env.OPENAI_MODEL_EXTRACT = process.env.SMOKE_MODEL;
+    process.env.OPENAI_MODEL_DEDUP = process.env.SMOKE_MODEL;
+  }
+}
+
+const { hasLlmKey, generateLlmText, generateLlmObject } = await import('../dist/llm.js');
 const { modelFor, LLM_PROVIDER } = await import('../dist/config.js');
 
-console.log(`provider=${LLM_PROVIDER} baseURL=${process.env.OPENAI_BASE_URL}`);
-console.log(`hasLlmKey=${hasLlmKey()} model(chat)=${modelFor('chat')}`);
+console.log(`mode=${mode} provider=${LLM_PROVIDER} baseURL=${process.env.OPENAI_BASE_URL ?? '(default api.openai.com)'}`);
+console.log(`hasLlmKey=${hasLlmKey()} model(chat)=${modelFor('chat')} model(extract)=${modelFor('extract')}`);
 
 // 1) plain text generation
 const t = await generateLlmText({
