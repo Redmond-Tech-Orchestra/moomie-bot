@@ -24,6 +24,8 @@ import { EVENTBRITE_DATA_DIR } from '../../config.js';
 import { getModel, hasLlmKey } from '../../llm.js';
 import { createLogger } from '../../logger.js';
 import { runPython } from '../sandbox/python-runner.js';
+import { listActiveEvents } from './live.js';
+import { snapshotEvent } from './snapshot.js';
 
 const log = createLogger('Eventbrite.analyze');
 
@@ -277,12 +279,17 @@ export async function analyze(question: string, context?: string): Promise<Analy
   }
 
   const dataDirAbs = resolve(EVENTBRITE_DATA_DIR);
+  const liveSnapshotContext = await refreshActiveEventSnapshotsForAnalysis();
+
   if (!existsSync(dataDirAbs)) {
     return errorResult(t0, `Archive dir does not exist: ${dataDirAbs}. Run sync_eventbrite_archive first.`);
   }
 
   const systemPrompt = buildSystemPrompt(dataDirAbs);
-  const userMessage = context ? `${question}\n\nAdditional context:\n${context}` : question;
+  const contextParts = [context, liveSnapshotContext].filter((part): part is string => !!part?.trim());
+  const userMessage = contextParts.length
+    ? `${question}\n\nAdditional context:\n${contextParts.join('\n\n')}`
+    : question;
 
   const transcript: AnalyzeResult['transcript'] = [];
   const collectedFiles: AnalyzeFile[] = [];
@@ -405,6 +412,11 @@ A user has asked a question that requires analysis over the archive on disk. You
 Iterate as needed (up to ${MAX_ITERATIONS} iterations): write code, observe stdout/stderr, refine.
 When you have enough to answer, call finalize.
 
+Active/live events may also appear in the archive with \`_meta.frozen == false\` and a recent
+\`_meta.synced_at\`. Those are current read-only snapshots captured immediately before this
+analysis. Use them for questions about current ticket sales, registration pace, source/affiliate
+mix, or comparisons between live events and historical frozen events.
+
 Be concise. Don't print enormous dataframes; aggregate first. For raw data
 the user can take away, write a CSV file to the current directory rather
 than dumping to stdout. **If a chart is needed, save it as a PNG with
@@ -412,6 +424,36 @@ matplotlib — NEVER print an ASCII bar chart, sparkline, or text-art
 diagram.** Files written to cwd are auto-attached to the reply.
 
 ${SCHEMA_DOC}`;
+}
+
+async function refreshActiveEventSnapshotsForAnalysis(): Promise<string | null> {
+  try {
+    const activeEvents = await listActiveEvents();
+    if (activeEvents.length === 0) return null;
+
+    const refreshed: string[] = [];
+    const failed: string[] = [];
+
+    for (const event of activeEvents) {
+      try {
+        const result = await snapshotEvent(event.id);
+        refreshed.push(`${result.event_name} (${result.event_id}, synced ${result.attendee_count} attendee rows, ${result.order_count} orders)`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        failed.push(`${event.name} (${event.id}): ${msg}`);
+        log.warn(`Live snapshot failed for ${event.id} (${event.name}):`, err);
+      }
+    }
+
+    return [
+      refreshed.length ? `Live Eventbrite snapshots refreshed for this analysis:\n${refreshed.map((s) => `- ${s}`).join('\n')}` : '',
+      failed.length ? `Live Eventbrite snapshots that failed:\n${failed.map((s) => `- ${s}`).join('\n')}` : '',
+    ].filter(Boolean).join('\n\n') || null;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn('Failed to list active Eventbrite events for analysis:', err);
+    return `Could not refresh active Eventbrite snapshots before analysis: ${msg}`;
+  }
 }
 
 function finishResult(

@@ -175,7 +175,7 @@ export const toolDeclarations = [
   },
   {
     name: 'analyze_eventbrite',
-    description: 'Hand off a data-analysis question about the Eventbrite archive to a stronger model that will write and run Python (pandas/numpy) against the archived JSON. Use for: per-ticket-class breakdowns, check-in / no-show rates, registration vs attendance comparisons, refund rates, revenue trends, growth over time, multi-event aggregates, ranking events by any metric, or anything beyond a one-shot lookup. Prefer this over scrolling Discord channels when the question is about past concerts, tickets, attendees, or sales. Make sure the archive is up to date first via sync_eventbrite_archive. Returns the final answer plus the code that was run.',
+    description: 'Hand off a data-analysis question about Eventbrite data to a stronger model that will write and run Python (pandas/numpy) against archived JSON plus freshly captured read-only snapshots of active events. Use for: per-ticket-class breakdowns, affiliate/source analysis, registration pace by day, check-in / no-show rates, registration vs attendance comparisons, refund rates, revenue trends, growth over time, multi-event aggregates, ranking events by any metric, or anything beyond a one-shot lookup. Prefer this over scrolling Discord channels when the question is about concerts, tickets, attendees, sources, affiliates, or sales. Use sync_eventbrite_archive first when asking about past events that may not be archived yet. Returns the final answer plus the code that was run.',
     parameters: {
       type: 'object',
       properties: {
