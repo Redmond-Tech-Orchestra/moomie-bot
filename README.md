@@ -10,7 +10,7 @@ backups, deploy flows, request diagrams), see the
 
 | Command | Description |
 |---------|-------------|
-| `/board [event]` | Consolidated action board — open items, overdue, by event. Uses AI to merge duplicates and group related tasks |
+| `/board [event]` | Consolidated action board — open items, overdue, by event or opted-in channel swimlane. Uses AI to merge duplicates and group related tasks |
 | `/events` | List upcoming events with T-minus countdowns |
 | `/digest [window]` | AI-generated summary of recent server activity (default: 1 week) |
 | `/website <task>` | Creates a GitHub issue, triggers AI agent to code changes, opens a PR |
@@ -21,7 +21,7 @@ backups, deploy flows, request diagrams), see the
 
 **Conversation Watcher** — Monitors all text channels. After 2 hours of silence, extracts action items, detects completions, and nudges stalled discussions via the configured LLM (`LLM_PROVIDER`: OpenAI by default, Gemini optional). Posts findings with ✅/❌ for human confirmation. Includes insert-time dedup to prevent cross-channel duplicates.
 
-**Event Watcher** — Auto-detects new channels in the "Performances" category, parses event names/dates, and tracks them. Archives events when channels move to "Archived."
+**Event Watcher** — Auto-detects new channels in the "Performances" category, parses event names/dates, and tracks each performance channel as its own board swimlane. Categories listed in `TRACKER_SWIMLANE_CATEGORY_IDS` are tracked as aggregate ongoing swimlanes; by default these are Logistics, Marketing, Technology, and Librarians. `TRACKER_IGNORED_CHANNEL_IDS` excludes channels such as moomie-thinking and bots from category-lane attribution. Archives events when channels move to "Archived."
 
 **Website Agent** — When `/website` is used, the full pipeline runs: issue creation → coding agent (`CODING_AGENT`: Codex by default, Gemini optional) → branch + PR → user notification.
 

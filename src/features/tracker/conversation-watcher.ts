@@ -2,7 +2,7 @@ import type { Client, Message, TextChannel } from 'discord.js';
 import { ChannelType, MessageFlags } from 'discord.js';
 import { z } from 'zod';
 import { loadPrompt } from '../../prompts/load-prompt.js';
-import { ARCHIVED_CATEGORY_ID, modelFor } from '../../config.js';
+import { ARCHIVED_CATEGORY_ID, TRACKER_IGNORED_CHANNEL_IDS, modelFor } from '../../config.js';
 import { generateLlmObject, hasLlmKey } from '../../llm.js';
 import { createLogger } from '../../logger.js';
 
@@ -170,10 +170,12 @@ function shouldBuffer(message: Message): boolean {
   if (message.author.bot) return false;
   if (!message.guild) return false;
   if (message.channel.type !== ChannelType.GuildText) return false;
+  if (TRACKER_IGNORED_CHANNEL_IDS.includes(message.channelId)) return false;
 
   // Skip archived category
   const parent = (message.channel as TextChannel).parentId;
   if (parent && parent === ARCHIVED_CATEGORY_ID) return false;
+  if (parent && TRACKER_IGNORED_CHANNEL_IDS.includes(parent)) return false;
 
   return true;
 }
@@ -315,7 +317,7 @@ async function processConversation(channelId: string, messages: BufferedMessage[
     // Create unassigned tracked items for needs_owner nudges so they appear on the board
     for (const nudge of nudges) {
       if (nudge.type === 'needs_owner') {
-        const event = resolveEvent(nudge.event, events);
+        const event = resolveEventForChannel(nudge.event, events, channelId);
         createItem({
           event_id: event?.id ?? null,
           description: nudge.message,
@@ -354,11 +356,11 @@ async function processConversation(channelId: string, messages: BufferedMessage[
 }
 
 function buildEventsContext(events: TrackerEvent[]): string {
-  if (events.length === 0) return 'No upcoming events currently tracked.';
-  return 'Known upcoming events:\n' + events.map((e) => {
+  if (events.length === 0) return 'No board swimlanes currently tracked.';
+  return 'Known board swimlanes and upcoming events:\n' + events.map((e) => {
     const dateStr = e.date
       ? new Date(e.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-      : 'date TBD';
+      : 'ongoing lane';
     return `- ${e.name} — ${dateStr}${e.channel_name ? ` (channel: #${e.channel_name})` : ''}`;
   }).join('\n');
 }
@@ -544,7 +546,7 @@ async function saveItemsWithDedup(
     }
 
     // verdict === 'new' or fallback
-    const event = resolveEvent(item.event, events);
+    const event = resolveEventForChannel(item.event, events, channelId);
     createItem({
       event_id: event?.id ?? null,
       description: item.description,
@@ -687,6 +689,23 @@ function resolveEvent(eventName: string | null, events: TrackerEvent[]): Tracker
   if (!eventName) return null;
   const lower = eventName.toLowerCase();
   return events.find((e) => e.name.toLowerCase().includes(lower)) ?? null;
+}
+
+function resolveEventForChannel(eventName: string | null, events: TrackerEvent[], channelId: string): TrackerEvent | null {
+  return resolveEvent(eventName, events) ?? resolveTrackerLaneForChannel(channelId);
+}
+
+function resolveTrackerLaneForChannel(channelId: string): TrackerEvent | null {
+  if (TRACKER_IGNORED_CHANNEL_IDS.includes(channelId)) return null;
+
+  const direct = getEventByChannelId(channelId);
+  if (direct) return direct;
+
+  const channel = discordClient.channels.cache.get(channelId) as TextChannel | undefined;
+  const parentId = channel?.parentId;
+  if (!parentId || TRACKER_IGNORED_CHANNEL_IDS.includes(parentId)) return null;
+
+  return getEventByChannelId(parentId) ?? null;
 }
 
 async function confirmExtraction(pending: PendingExtraction, _client: Client): Promise<void> {

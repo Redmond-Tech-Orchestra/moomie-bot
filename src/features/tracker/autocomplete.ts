@@ -32,7 +32,7 @@ export async function autocompleteEvent(interaction: AutocompleteInteraction): P
     for (const e of filtered) {
       const dateStr = e.date
         ? new Date(e.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-        : 'TBD';
+        : 'lane';
       choices.push({ name: `${e.name} (${dateStr})`, value: e.id });
     }
 
