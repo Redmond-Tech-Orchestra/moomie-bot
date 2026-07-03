@@ -22,6 +22,7 @@ export const TRACKER_IGNORED_CHANNEL_IDS = parseCsv(process.env.TRACKER_IGNORED_
   '1510218806146891876', // moomie-thinking
   '1500077195551576186', // bots
 ].join(','));
+export const TRACKER_SWIMLANE_DATE = '9999-12-31';
 
 function parseCsv(value: string): string[] {
   return value

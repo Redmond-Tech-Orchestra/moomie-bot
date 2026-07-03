@@ -1,6 +1,7 @@
 import type { AutocompleteInteraction } from 'discord.js';
 import { getActiveEvents, getOrphanItems } from './store.js';
 import { createLogger } from '../../logger.js';
+import { TRACKER_SWIMLANE_DATE } from '../../config.js';
 
 const log = createLogger('Tracker');
 
@@ -30,7 +31,7 @@ export async function autocompleteEvent(interaction: AutocompleteInteraction): P
       .slice(0, 24);
 
     for (const e of filtered) {
-      const dateStr = e.date
+      const dateStr = e.date && e.date !== TRACKER_SWIMLANE_DATE
         ? new Date(e.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
         : 'lane';
       choices.push({ name: `${e.name} (${dateStr})`, value: e.id });

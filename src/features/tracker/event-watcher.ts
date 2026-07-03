@@ -20,6 +20,7 @@ import {
   TRACKER_SWIMLANE_CATEGORY_IDS,
   TRACKER_SWIMLANE_CHANNEL_IDS,
   TRACKER_IGNORED_CHANNEL_IDS,
+  TRACKER_SWIMLANE_DATE,
   modelFor,
 } from '../../config.js';
 import { generateLlmObject, hasLlmKey } from '../../llm.js';
@@ -287,6 +288,7 @@ function syncSwimlaneCategory(category: CategoryChannel): boolean {
 
   createEvent({
     name: displayNameFromChannel(category.name),
+    date: TRACKER_SWIMLANE_DATE,
     channel_id: category.id,
     channel_name: category.name,
     confirmed: true,
@@ -303,6 +305,7 @@ function syncSwimlaneChannel(channel: TextChannel): boolean {
 
   createEvent({
     name: displayNameFromChannel(channel.name),
+    date: TRACKER_SWIMLANE_DATE,
     channel_id: channel.id,
     channel_name: channel.name,
     confirmed: true,

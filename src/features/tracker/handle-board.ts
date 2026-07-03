@@ -2,6 +2,7 @@ import type { CommandContext } from '../../types.js';
 import { getActiveEvents, getItemsForEvent, getOrphanItems, type TrackerEvent, type TrackerItem } from './store.js';
 import { buildBoardActionRows } from './board-interactions.js';
 import { chunkText, DISCORD_CHUNK_MAX } from '../../adapters/chunk.js';
+import { TRACKER_SWIMLANE_DATE } from '../../config.js';
 
 export const name = 'board';
 export const description = 'Swimlane-centric status board';
@@ -154,7 +155,7 @@ function formatOrgBoard(): string {
 
 function formatEventBoard(event: TrackerEvent): string {
   const items = getItemsForEvent(event.id).filter((i) => i.status !== 'done');
-  const heading = event.date
+  const heading = event.date && event.date !== TRACKER_SWIMLANE_DATE
     ? `## 🎵 ${event.name} (${formatDate(event.date)}) — ${formatTMinus(event.date)}\n`
     : `## 📌 ${event.name}\n`;
 

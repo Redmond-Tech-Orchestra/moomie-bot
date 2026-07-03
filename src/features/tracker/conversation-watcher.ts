@@ -2,7 +2,7 @@ import type { Client, Message, TextChannel } from 'discord.js';
 import { ChannelType, MessageFlags } from 'discord.js';
 import { z } from 'zod';
 import { loadPrompt } from '../../prompts/load-prompt.js';
-import { ARCHIVED_CATEGORY_ID, TRACKER_IGNORED_CHANNEL_IDS, modelFor } from '../../config.js';
+import { ARCHIVED_CATEGORY_ID, TRACKER_IGNORED_CHANNEL_IDS, TRACKER_SWIMLANE_DATE, modelFor } from '../../config.js';
 import { generateLlmObject, hasLlmKey } from '../../llm.js';
 import { createLogger } from '../../logger.js';
 
@@ -359,6 +359,7 @@ function buildEventsContext(events: TrackerEvent[]): string {
   if (events.length === 0) return 'No board swimlanes currently tracked.';
   return 'Known board swimlanes and upcoming events:\n' + events.map((e) => {
     const dateStr = e.date
+    && e.date !== TRACKER_SWIMLANE_DATE
       ? new Date(e.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
       : 'ongoing lane';
     return `- ${e.name} — ${dateStr}${e.channel_name ? ` (channel: #${e.channel_name})` : ''}`;
