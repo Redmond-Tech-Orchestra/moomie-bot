@@ -92,7 +92,7 @@ registerMigration((db) => {
 // Same migration, with an explicit alias for live DBs that missed the earlier
 // quoted-column detection and still have events.date as NOT NULL.
 registerMigration((db) => {
-  const col = db.prepare(`SELECT [notnull] AS notnull FROM pragma_table_info('events') WHERE name = 'date'`).get() as { notnull: number } | undefined;
+  const col = db.prepare(`SELECT * FROM pragma_table_info('events') WHERE name = 'date'`).get() as { notnull: number } | undefined;
   if (!col || !col.notnull) return;
 
   db.exec(`
