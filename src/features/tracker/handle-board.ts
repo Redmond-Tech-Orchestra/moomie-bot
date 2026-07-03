@@ -153,19 +153,18 @@ function formatOrgBoard(): string {
 }
 
 function formatEventBoard(event: TrackerEvent): string {
-  const items = getItemsForEvent(event.id);
+  const items = getItemsForEvent(event.id).filter((i) => i.status !== 'done');
   const dateStr = event.date ? formatDate(event.date) : 'TBD';
   const tMinus = event.date ? formatTMinus(event.date) : 'date TBD';
 
   const lines: string[] = [`## 🎵 ${event.name} (${dateStr}) — ${tMinus}\n`];
 
   if (items.length === 0) {
-    lines.push('No items tracked yet.');
+    lines.push('No open items.');
     return lines.join('\n');
   }
 
   // Group by status
-  const done = items.filter((i) => i.status === 'done');
   const open = items.filter((i) => i.status === 'open');
   const stale = items.filter((i) => i.status === 'stale');
 
@@ -195,18 +194,6 @@ function formatEventBoard(event: TrackerEvent): string {
       lines.push(formatItem(item, '⬜'));
     }
     lines.push('');
-  }
-
-  if (done.length > 0) {
-    lines.push(`**✅ Done (${done.length}):**`);
-    // Only show last few completed to avoid clutter
-    const recent = done.slice(-5);
-    for (const item of recent) {
-      lines.push(formatItem(item, '✅'));
-    }
-    if (done.length > 5) {
-      lines.push(`  ...and ${done.length - 5} more`);
-    }
   }
 
   return lines.join('\n');
