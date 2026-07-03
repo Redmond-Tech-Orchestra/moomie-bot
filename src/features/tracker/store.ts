@@ -267,7 +267,7 @@ export function getOrphanItems(): TrackerItem[] {
     .all() as TrackerItem[];
 }
 
-export function reassignItems(itemIds: number[], eventId: number): void {
+export function reassignItems(itemIds: number[], eventId: number | null): void {
   const db = getDb();
   const stmt = db.prepare(`UPDATE items SET event_id = ? WHERE id = ?`);
   for (const id of itemIds) stmt.run(eventId, id);
