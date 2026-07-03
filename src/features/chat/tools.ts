@@ -17,7 +17,9 @@ import {
   updateItemDescription,
   getOwnersForItemIds,
   setItemOwners,
+  reassignItems,
   type TrackerItem,
+  type TrackerEvent,
 } from '../tracker/store.js';
 import { addReminder, parseReminder } from '../remind/scheduler.js';
 import { executeFeedback } from '../feedback/handle-command.js';
@@ -131,6 +133,19 @@ export const toolDeclarations = [
         query: { type: 'string', description: 'Display name, nickname, or username search text.' },
         limit: { type: 'number', description: 'Maximum matches to return (default 10, max 20).' },
       },
+    },
+  },
+  {
+    name: 'reassign_items',
+    description: 'Move tracked action items to another board event, or back to org-wide. Use when the user asks to move/reclassify item IDs between events.',
+    parameters: {
+      type: 'object',
+      properties: {
+        item_ids: { type: 'array', items: { type: 'number' }, description: 'Item IDs to move.' },
+        event_id: { type: 'number', description: 'Target board event ID. Use 0 for org-wide.' },
+        event_name: { type: 'string', description: 'Target event name, such as Shakespeare. Use org-wide for no event.' },
+      },
+      required: ['item_ids'],
     },
   },
   {
@@ -262,6 +277,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
     case 'create_item': return createItemTool(args, ctx);
     case 'ingest_items': return ingestItemsTool(args, ctx);
     case 'lookup_guild_members': return lookupGuildMembersTool(args);
+    case 'reassign_items': return reassignItemsTool(args);
     case 'query_events': return queryEvents(args);
     case 'read_channel_messages': return readChannelMessages(args);
     case 'list_channels': return listChannels(args);
@@ -321,6 +337,11 @@ const toolSchemas: Record<string, z.ZodTypeAny> = {
     user_id: z.string().optional().describe('Exact Discord user ID to fetch'),
     query: z.string().optional().describe('Display name, nickname, or username search text'),
     limit: z.number().optional().describe('Maximum matches to return (default 10, max 20)'),
+  }),
+  reassign_items: z.object({
+    item_ids: z.array(z.number()).min(1).max(25).describe('Item IDs to move'),
+    event_id: z.number().optional().describe('Target board event ID. Use 0 for org-wide.'),
+    event_name: z.string().optional().describe('Target event name, such as Shakespeare. Use org-wide for no event.'),
   }),
   query_events: z.object({
     include_past: z.boolean().optional().describe('Include past events. Default false.'),
@@ -479,6 +500,91 @@ function createItemTool(args: Record<string, unknown>, ctx: ToolCallContext): st
   }
 
   return JSON.stringify({ success: true, item_id: id, message: `Created item #${id}: "${description}"` });
+}
+
+function reassignItemsTool(args: Record<string, unknown>): string {
+  const itemIds = [...new Set(((args.item_ids as number[] | undefined) ?? [])
+    .map((id) => Math.trunc(id))
+    .filter((id) => Number.isFinite(id) && id > 0))];
+  if (itemIds.length === 0) return JSON.stringify({ error: 'item_ids is required' });
+
+  const target = resolveReassignTarget(args);
+  if ('error' in target) return JSON.stringify(target);
+
+  const db = getDb();
+  const lookup = db.prepare(`SELECT id, description, event_id FROM items WHERE id = ?`);
+  const moved: Array<{ item_id: number; description: string; from_event_id: number | null }> = [];
+  const failed: Array<{ item_id: number; error: string }> = [];
+
+  for (const id of itemIds) {
+    const item = lookup.get(id) as { id: number; description: string; event_id: number | null } | undefined;
+    if (!item) {
+      failed.push({ item_id: id, error: 'item not found' });
+      continue;
+    }
+    moved.push({ item_id: item.id, description: item.description, from_event_id: item.event_id });
+  }
+
+  if (moved.length > 0) {
+    reassignItems(moved.map((item) => item.item_id), target.event_id);
+  }
+
+  const targetLabel = target.event?.name ?? 'Org-wide';
+  const movedLine = moved.length > 0
+    ? `Moved ${moved.length} item${moved.length === 1 ? '' : 's'} to ${targetLabel}: ${moved.map((item) => `#${item.item_id}`).join(', ')}.`
+    : `No items moved to ${targetLabel}.`;
+  const failedLine = failed.length > 0
+    ? ` Failed: ${failed.map((item) => `#${item.item_id} (${item.error})`).join(', ')}.`
+    : '';
+
+  return JSON.stringify({
+    success: failed.length === 0,
+    target: target.event ? {
+      event_id: target.event.id,
+      name: target.event.name,
+      date: target.event.date,
+    } : {
+      event_id: null,
+      name: 'Org-wide',
+    },
+    moved,
+    failed,
+    summary: movedLine + failedLine,
+  });
+}
+
+function resolveReassignTarget(args: Record<string, unknown>): { event_id: number | null; event?: TrackerEvent } | { error: string; candidates?: Array<{ event_id: number; name: string; date: string | null }> } {
+  const eventId = args.event_id as number | undefined;
+  const eventName = (args.event_name as string | undefined)?.trim();
+
+  if (eventId === 0 || eventName?.toLowerCase() === 'org-wide' || eventName?.toLowerCase() === 'org wide') {
+    return { event_id: null };
+  }
+
+  if (eventId !== undefined) {
+    const event = getEventById(eventId);
+    if (!event) return { error: `event_id ${eventId} does not exist. Use query_events first or use event_id 0 for org-wide.` };
+    return { event_id: event.id, event };
+  }
+
+  if (!eventName) return { error: 'event_id or event_name is required. Use event_id 0 or event_name "org-wide" to move items out of an event.' };
+
+  const lower = eventName.toLowerCase();
+  const events = getAllEvents();
+  const exact = events.filter((event) => event.name.toLowerCase() === lower || event.channel_name?.toLowerCase() === lower);
+  const matches = exact.length > 0 ? exact : events.filter((event) =>
+    event.name.toLowerCase().includes(lower) || (event.channel_name?.toLowerCase().includes(lower) ?? false)
+  );
+
+  if (matches.length === 1) return { event_id: matches[0].id, event: matches[0] };
+  if (matches.length > 1) {
+    return {
+      error: `event_name "${eventName}" matched multiple events; use event_id instead.`,
+      candidates: matches.slice(0, 10).map((event) => ({ event_id: event.id, name: event.name, date: event.date })),
+    };
+  }
+
+  return { error: `No event found matching "${eventName}". Use query_events first or use org-wide.` };
 }
 
 interface OwnerInput {
