@@ -10,6 +10,13 @@ import type { CodingAgent, AgentTask, AgentResult, CodingProgress, ProgressCallb
 const require = createRequire(import.meta.url);
 const CODEX_BIN = path.resolve(path.dirname(require.resolve('@openai/codex/package.json')), 'bin', 'codex.js');
 
+function codexRuntimeBlocker(detail: string): string | null {
+  if (detail.includes('bwrap: No permissions to create new namespace')) {
+    return 'Codex sandbox failed: bubblewrap cannot create a namespace in this container. Set CODEX_SANDBOX to a supported mode or run Codex in an environment that permits unprivileged namespaces.';
+  }
+  return null;
+}
+
 /**
  * Pull a usable progress signal out of a single codex `item.*` payload, or null
  * if the item carries nothing worth surfacing. The parser is deliberately
@@ -236,10 +243,15 @@ export class CodexAgent implements CodingAgent {
         cleanupTimers();
         if (settled) return;
         settled = true;
+        const detail = state.turnError || stderr.trim() || state.lastAgentMessage || `exit code ${code}`;
+        const runtimeBlocker = codexRuntimeBlocker(detail);
+        if (runtimeBlocker) {
+          reject(new Error(runtimeBlocker));
+          return;
+        }
         if (code === 0 && !state.turnError) {
           resolve(state.lastAgentMessage);
         } else {
-          const detail = state.turnError || stderr.trim() || state.lastAgentMessage || `exit code ${code}`;
           reject(new Error(`Codex CLI failed: ${detail}`.slice(0, 1500)));
         }
       });

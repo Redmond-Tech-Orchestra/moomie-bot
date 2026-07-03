@@ -231,7 +231,11 @@ export async function startDiscord(): Promise<void> {
     if (message.author.bot) return;
 
     const isDM = !message.guild;
-    const isMentioned = message.mentions.has(client.user!);
+    const isMentioned = message.mentions.has(client.user!, {
+      ignoreEveryone: true,
+      ignoreRoles: true,
+      ignoreRepliedUser: true,
+    });
 
     // Check if replying to a Moomie message (fetch once, reuse below)
     let referencedBotContent: string | null = null;
