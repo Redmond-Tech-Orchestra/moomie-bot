@@ -11,6 +11,24 @@ export const DISCORD_GUILD_ID = process.env.DISCORD_GUILD_ID || '119873995145871
 // Tracker — Discord category snowflake IDs
 export const PERFORMANCES_CATEGORY_ID = process.env.PERFORMANCES_CATEGORY_ID || '1314829117249687574';
 export const ARCHIVED_CATEGORY_ID = process.env.ARCHIVED_CATEGORY_ID || '1314827819175378994';
+export const TRACKER_SWIMLANE_CATEGORY_IDS = parseCsv(process.env.TRACKER_SWIMLANE_CATEGORY_IDS || [
+  '1314828670761828404', // Logistics
+  '1314828779436380170', // Marketing
+  '1522719921308700812', // Technology
+  '1314828932024897619', // Librarians
+].join(','));
+export const TRACKER_SWIMLANE_CHANNEL_IDS = parseCsv(process.env.TRACKER_SWIMLANE_CHANNEL_IDS || '');
+export const TRACKER_IGNORED_CHANNEL_IDS = parseCsv(process.env.TRACKER_IGNORED_CHANNEL_IDS || [
+  '1510218806146891876', // moomie-thinking
+  '1500077195551576186', // bots
+].join(','));
+
+function parseCsv(value: string): string[] {
+  return value
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean);
+}
 
 // Dedicated text channel where Moomie opens a per-job thread to stream her live
 // "thinking" trail. Leave empty to fall back to an inline trail in the origin

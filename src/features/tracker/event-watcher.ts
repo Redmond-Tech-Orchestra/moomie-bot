@@ -13,7 +13,15 @@ import {
   getOrphanItems,
   reassignItems,
 } from './store.js';
-import { PERFORMANCES_CATEGORY_ID, ARCHIVED_CATEGORY_ID, DISCORD_GUILD_ID, modelFor } from '../../config.js';
+import {
+  PERFORMANCES_CATEGORY_ID,
+  ARCHIVED_CATEGORY_ID,
+  DISCORD_GUILD_ID,
+  TRACKER_SWIMLANE_CATEGORY_IDS,
+  TRACKER_SWIMLANE_CHANNEL_IDS,
+  TRACKER_IGNORED_CHANNEL_IDS,
+  modelFor,
+} from '../../config.js';
 import { generateLlmObject, hasLlmKey } from '../../llm.js';
 import { loadPrompt } from '../../prompts/load-prompt.js';
 import { createLogger } from '../../logger.js';
@@ -61,64 +69,41 @@ export function registerEventConfirmationListener(client: Client): void {
  * Run on startup: sync all channels in the Performances category to the events table.
  */
 export async function syncEvents(client: Client): Promise<void> {
-  if (!PERFORMANCES_CATEGORY_ID) {
-    log.warn('PERFORMANCES_CATEGORY_ID not set — skipping event sync');
-    return;
-  }
-
   const guild = client.guilds.cache.get(DISCORD_GUILD_ID);
   if (!guild) return;
 
-  // Fetch to avoid empty-cache race on startup
-  const category = guild.channels.cache.get(PERFORMANCES_CATEGORY_ID)
-    ?? await guild.channels.fetch(PERFORMANCES_CATEGORY_ID).catch(() => null);
-  if (!category || category.type !== ChannelType.GuildCategory) {
-    log.warn('Performances category not found');
-    return;
+  if (PERFORMANCES_CATEGORY_ID) {
+    // Fetch to avoid empty-cache race on startup
+    const category = guild.channels.cache.get(PERFORMANCES_CATEGORY_ID)
+      ?? await guild.channels.fetch(PERFORMANCES_CATEGORY_ID).catch(() => null);
+    if (!category || category.type !== ChannelType.GuildCategory) {
+      log.warn('Performances category not found');
+    } else {
+      const channels = (category as CategoryChannel).children.cache.filter(
+        (ch) => ch.type === ChannelType.GuildText
+      );
+
+      let synced = 0;
+      for (const [, channel] of channels) {
+        if (await syncPerformanceChannel(channel as TextChannel)) synced++;
+      }
+
+      if (synced > 0) {
+        log.info(`Synced ${synced} new event(s) from Performances category`);
+      }
+    }
+  } else {
+    log.warn('PERFORMANCES_CATEGORY_ID not set — skipping performance event sync');
   }
 
-  const channels = (category as CategoryChannel).children.cache.filter(
-    (ch) => ch.type === ChannelType.GuildText
-  );
+  const categorySwimlaneSynced = await syncSwimlaneCategories(client);
+  if (categorySwimlaneSynced > 0) {
+    log.info(`Synced ${categorySwimlaneSynced} tracker category swimlane(s)`);
+  }
 
-  let synced = 0;
-  for (const [, channel] of channels) {
-    const existing = getEventByChannelId(channel.id);
-    if (existing) continue;
-
-    const parsed = parseChannelName(channel.name);
-    if (!parsed) {
-      log.info(`Could not parse channel name: #${channel.name}`);
-      continue;
-    }
-
-    if (parsed.ambiguous || parsed.days.length === 0) {
-      // Dateless or ambiguous — create with null date, ask for details
-      const newId = createEvent({
-        name: parsed.name,
-        channel_id: channel.id,
-        channel_name: channel.name,
-        confirmed: false,
-      });
-      await askForConfirmation(channel as TextChannel, parsed);
-      await attributeOrphansToEvent(newId);
-      continue;
-    }
-
-    const { date, end_date } = computeEventDates(parsed);
-    const eventId = createEvent({
-      name: parsed.name,
-      date,
-      end_date: end_date ?? undefined,
-      channel_id: channel.id,
-      channel_name: channel.name,
-      confirmed: false,
-    });
-
-    // Post confirmation request in the channel
-    await askForConfirmation(channel as TextChannel, parsed, eventId);
-    await attributeOrphansToEvent(eventId);
-    synced++;
+  const swimlaneSynced = await syncSwimlaneChannels(client);
+  if (swimlaneSynced > 0) {
+    log.info(`Synced ${swimlaneSynced} tracker channel swimlane(s)`);
   }
 
   // Check for archived channels
@@ -134,60 +119,47 @@ export async function syncEvents(client: Client): Promise<void> {
     }
   }
 
-  if (synced > 0) {
-    log.info(`Synced ${synced} new event(s) from Performances category`);
-  }
 }
 
 /**
  * Register runtime listeners for channel creation and updates.
  */
 export function registerChannelWatcher(client: Client): void {
-  if (!PERFORMANCES_CATEGORY_ID) return;
+  if (!PERFORMANCES_CATEGORY_ID && TRACKER_SWIMLANE_CATEGORY_IDS.length === 0 && TRACKER_SWIMLANE_CHANNEL_IDS.length === 0) return;
 
   client.on('channelCreate', async (channel) => {
     if (channel.type !== ChannelType.GuildText) return;
+    if (TRACKER_IGNORED_CHANNEL_IDS.includes(channel.id)) return;
+
+    if (TRACKER_SWIMLANE_CHANNEL_IDS.includes(channel.id)) {
+      syncSwimlaneChannel(channel as TextChannel);
+      return;
+    }
+
+    if (channel.parentId && TRACKER_SWIMLANE_CATEGORY_IDS.includes(channel.parentId)) {
+      const category = channel.parent;
+      if (category?.type === ChannelType.GuildCategory) syncSwimlaneCategory(category as CategoryChannel);
+      return;
+    }
+
     if (channel.parentId !== PERFORMANCES_CATEGORY_ID) return;
 
-    const existing = getEventByChannelId(channel.id);
-    if (existing) return;
-
-    const parsed = parseChannelName(channel.name);
-    if (!parsed) {
-      log.info(`New channel could not be parsed: #${channel.name}`);
-      return;
-    }
-
-    if (parsed.ambiguous || parsed.days.length === 0) {
-      const newId = createEvent({
-        name: parsed.name,
-        channel_id: channel.id,
-        channel_name: channel.name,
-        confirmed: false,
-      });
-      await askForConfirmation(channel as TextChannel, parsed);
-      attributeOrphansToEvent(newId).catch(() => {});
-      return;
-    }
-
-    const { date, end_date } = computeEventDates(parsed);
-    const eventId = createEvent({
-      name: parsed.name,
-      date,
-      end_date: end_date ?? undefined,
-      channel_id: channel.id,
-      channel_name: channel.name,
-      confirmed: false,
-    });
-
-    await askForConfirmation(channel as TextChannel, parsed, eventId);
-    attributeOrphansToEvent(eventId).catch(() => {});
-    log.info(`New event detected: ${parsed.name} (${date})`);
+    await syncPerformanceChannel(channel as TextChannel, true);
   });
 
   // Watch for channel moves (to Archived category) and renames
   client.on('channelUpdate', async (oldChannel, newChannel) => {
+    if (newChannel.type === ChannelType.GuildCategory && TRACKER_SWIMLANE_CATEGORY_IDS.includes(newChannel.id)) {
+      const event = getEventByChannelId(newChannel.id);
+      if (event) {
+        updateEvent(event.id, { name: displayNameFromChannel(newChannel.name), channel_name: newChannel.name });
+        log.info(`Tracker category swimlane updated from category rename: ${newChannel.name} (id=${event.id})`);
+      }
+      return;
+    }
+
     if (newChannel.type !== ChannelType.GuildText) return;
+    if (TRACKER_IGNORED_CHANNEL_IDS.includes(newChannel.id)) return;
 
     // Archive detection
     if (ARCHIVED_CATEGORY_ID) {
@@ -203,13 +175,20 @@ export function registerChannelWatcher(client: Client): void {
       }
     }
 
-    // Rename detection — only for Performances channels
-    if (newChannel.parentId !== PERFORMANCES_CATEGORY_ID) return;
     const oldName = 'name' in oldChannel ? oldChannel.name : null;
     if (!oldName || oldName === newChannel.name) return;
 
     const event = getEventByChannelId(newChannel.id);
     if (!event) return;
+
+    if (TRACKER_SWIMLANE_CHANNEL_IDS.includes(newChannel.id)) {
+      updateEvent(event.id, { name: displayNameFromChannel(newChannel.name), channel_name: newChannel.name });
+      log.info(`Tracker swimlane updated from channel rename: #${oldName} → #${newChannel.name} (id=${event.id})`);
+      return;
+    }
+
+    // Rename detection — only for Performances channels
+    if (newChannel.parentId !== PERFORMANCES_CATEGORY_ID) return;
 
     const parsed = parseChannelName(newChannel.name);
     if (!parsed) {
@@ -232,6 +211,111 @@ export function registerChannelWatcher(client: Client): void {
     updateEvent(event.id, fields);
     log.info(`Event updated from channel rename: #${oldName} → #${newChannel.name} (id=${event.id}, name=${parsed.name}${fields.date ? `, date=${fields.date}` : ''})`);
   });
+}
+
+async function syncPerformanceChannel(channel: TextChannel, logNew: boolean = false): Promise<boolean> {
+  const existing = getEventByChannelId(channel.id);
+  if (existing) return false;
+
+  const parsed = parseChannelName(channel.name);
+  if (!parsed) {
+    log.info(`${logNew ? 'New channel' : 'Channel'} could not be parsed: #${channel.name}`);
+    return false;
+  }
+
+  if (parsed.ambiguous || parsed.days.length === 0) {
+    const newId = createEvent({
+      name: parsed.name,
+      channel_id: channel.id,
+      channel_name: channel.name,
+      confirmed: false,
+    });
+    await askForConfirmation(channel, parsed);
+    attributeOrphansToEvent(newId).catch(() => {});
+    return true;
+  }
+
+  const { date, end_date } = computeEventDates(parsed);
+  const eventId = createEvent({
+    name: parsed.name,
+    date,
+    end_date: end_date ?? undefined,
+    channel_id: channel.id,
+    channel_name: channel.name,
+    confirmed: false,
+  });
+
+  await askForConfirmation(channel, parsed, eventId);
+  attributeOrphansToEvent(eventId).catch(() => {});
+  if (logNew) log.info(`New event detected: ${parsed.name} (${date})`);
+  return true;
+}
+
+async function syncSwimlaneChannels(client: Client): Promise<number> {
+  let synced = 0;
+  for (const channelId of TRACKER_SWIMLANE_CHANNEL_IDS) {
+    if (TRACKER_IGNORED_CHANNEL_IDS.includes(channelId)) continue;
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (!channel || channel.type !== ChannelType.GuildText) {
+      log.warn(`Tracker swimlane channel not found or not text: ${channelId}`);
+      continue;
+    }
+    if (syncSwimlaneChannel(channel as TextChannel)) synced++;
+  }
+  return synced;
+}
+
+async function syncSwimlaneCategories(client: Client): Promise<number> {
+  let synced = 0;
+  for (const categoryId of TRACKER_SWIMLANE_CATEGORY_IDS) {
+    const channel = await client.channels.fetch(categoryId).catch(() => null);
+    if (!channel || channel.type !== ChannelType.GuildCategory) {
+      log.warn(`Tracker swimlane category not found: ${categoryId}`);
+      continue;
+    }
+    if (syncSwimlaneCategory(channel as CategoryChannel)) synced++;
+  }
+  return synced;
+}
+
+function syncSwimlaneCategory(category: CategoryChannel): boolean {
+  const existing = getEventByChannelId(category.id);
+  if (existing) {
+    updateEvent(existing.id, { name: displayNameFromChannel(category.name), channel_name: category.name });
+    return false;
+  }
+
+  createEvent({
+    name: displayNameFromChannel(category.name),
+    channel_id: category.id,
+    channel_name: category.name,
+    confirmed: true,
+  });
+  return true;
+}
+
+function syncSwimlaneChannel(channel: TextChannel): boolean {
+  const existing = getEventByChannelId(channel.id);
+  if (existing) {
+    updateEvent(existing.id, { name: displayNameFromChannel(channel.name), channel_name: channel.name });
+    return false;
+  }
+
+  createEvent({
+    name: displayNameFromChannel(channel.name),
+    channel_id: channel.id,
+    channel_name: channel.name,
+    confirmed: true,
+  });
+  return true;
+}
+
+function displayNameFromChannel(channelName: string): string {
+  return channelName
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 /**

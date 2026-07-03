@@ -4,12 +4,12 @@ import { buildBoardActionRows } from './board-interactions.js';
 import { chunkText, DISCORD_CHUNK_MAX } from '../../adapters/chunk.js';
 
 export const name = 'board';
-export const description = 'Event-centric status board';
+export const description = 'Swimlane-centric status board';
 
 export async function execute(ctx: CommandContext, args: string): Promise<void> {
   const events = getActiveEvents();
   if (events.length === 0) {
-    await ctx.reply('No upcoming events tracked yet. Events are auto-detected from Performances channels.');
+    await ctx.reply('No board swimlanes tracked yet. Events are auto-detected from Performances channels; other channels can be opted in with TRACKER_SWIMLANE_CHANNEL_IDS.');
     return;
   }
 
@@ -154,10 +154,11 @@ function formatOrgBoard(): string {
 
 function formatEventBoard(event: TrackerEvent): string {
   const items = getItemsForEvent(event.id).filter((i) => i.status !== 'done');
-  const dateStr = event.date ? formatDate(event.date) : 'TBD';
-  const tMinus = event.date ? formatTMinus(event.date) : 'date TBD';
+  const heading = event.date
+    ? `## 🎵 ${event.name} (${formatDate(event.date)}) — ${formatTMinus(event.date)}\n`
+    : `## 📌 ${event.name}\n`;
 
-  const lines: string[] = [`## 🎵 ${event.name} (${dateStr}) — ${tMinus}\n`];
+  const lines: string[] = [heading];
 
   if (items.length === 0) {
     lines.push('No open items.');
