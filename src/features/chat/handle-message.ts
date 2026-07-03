@@ -7,7 +7,7 @@ import { createLogger } from '../../logger.js';
 
 const log = createLogger('Chat');
 
-const MAX_TOOL_ROUNDS = 8;
+const MAX_TOOL_ROUNDS = 12;
 
 interface ChatMessage {
   userId: string;

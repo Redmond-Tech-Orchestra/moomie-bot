@@ -1,5 +1,5 @@
 import { ChannelType } from 'discord.js';
-import type { TextChannel } from 'discord.js';
+import type { Guild, GuildMember, TextChannel } from 'discord.js';
 import { tool, type Tool } from 'ai';
 import { z } from 'zod';
 import { client } from '../../adapters/discord.js';
@@ -15,8 +15,9 @@ import {
   createItem,
   markItemDone,
   updateItemDescription,
+  getOwnersForItemIds,
+  setItemOwners,
   type TrackerItem,
-  type TrackerEvent,
 } from '../tracker/store.js';
 import { addReminder, parseReminder } from '../remind/scheduler.js';
 import { executeFeedback } from '../feedback/handle-command.js';
@@ -71,7 +72,7 @@ export const toolDeclarations = [
   },
   {
     name: 'create_item',
-    description: 'Create a new tracked action item.',
+    description: 'Create a new tracked action item. Only description is required; owner and event fields are optional.',
     parameters: {
       type: 'object',
       properties: {
@@ -82,6 +83,54 @@ export const toolDeclarations = [
         target_date: { type: 'string', description: 'Deadline (YYYY-MM-DD)' },
       },
       required: ['description'],
+    },
+  },
+  {
+    name: 'ingest_items',
+    description: 'Bulk import pasted action items. Resolves owner names to Discord IDs from the configured guild, dedupes against open items, validates event IDs, and returns a partial-success report.',
+    parameters: {
+      type: 'object',
+      properties: {
+        items: {
+          type: 'array',
+          description: 'Parsed action items from the pasted list.',
+          items: {
+            type: 'object',
+            properties: {
+              description: { type: 'string', description: 'Action item text without trailing owner parentheses.' },
+              owner_names: { type: 'array', items: { type: 'string' }, description: 'Owner display names parsed from parentheses or text.' },
+              owners: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    name: { type: 'string' },
+                    id: { type: 'string' },
+                  },
+                },
+              },
+              event_id: { type: 'number', description: 'Optional existing board event ID. Leave unset for org-wide items.' },
+              target_date: { type: 'string', description: 'Optional deadline (YYYY-MM-DD).' },
+            },
+            required: ['description'],
+          },
+        },
+        dedupe: { type: 'boolean', description: 'Whether to check open items for likely duplicates. Defaults to true.' },
+        update_duplicates: { type: 'boolean', description: 'Whether likely duplicates should be updated with provided owner/target fields. Defaults to false.' },
+      },
+      required: ['items'],
+    },
+  },
+  {
+    name: 'lookup_guild_members',
+    description: 'Look up Discord guild members by user ID or display/username. Works from DMs by using the configured orchestra guild ID.',
+    parameters: {
+      type: 'object',
+      properties: {
+        user_id: { type: 'string', description: 'Exact Discord user ID to fetch.' },
+        query: { type: 'string', description: 'Display name, nickname, or username search text.' },
+        limit: { type: 'number', description: 'Maximum matches to return (default 10, max 20).' },
+      },
     },
   },
   {
@@ -211,6 +260,8 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
     case 'resolve_item': return resolveItem(args, ctx);
     case 'update_item': return updateItem(args, ctx);
     case 'create_item': return createItemTool(args, ctx);
+    case 'ingest_items': return ingestItemsTool(args, ctx);
+    case 'lookup_guild_members': return lookupGuildMembersTool(args);
     case 'query_events': return queryEvents(args);
     case 'read_channel_messages': return readChannelMessages(args);
     case 'list_channels': return listChannels(args);
@@ -252,6 +303,25 @@ const toolSchemas: Record<string, z.ZodTypeAny> = {
     owner_id: z.string().optional().describe('Discord user ID of owner'),
     target_date: z.string().optional().describe('Deadline (YYYY-MM-DD)'),
   }),
+  ingest_items: z.object({
+    items: z.array(z.object({
+      description: z.string().describe('Action item text without trailing owner parentheses'),
+      owner_names: z.array(z.string()).optional().describe('Owner display names parsed from parentheses or text'),
+      owners: z.array(z.object({
+        name: z.string().optional(),
+        id: z.string().optional(),
+      })).optional().describe('Owner names and/or Discord IDs'),
+      event_id: z.number().optional().describe('Optional existing board event ID. Leave unset for org-wide items.'),
+      target_date: z.string().optional().describe('Optional deadline (YYYY-MM-DD)'),
+    })).max(50).describe('Parsed action items from the pasted list'),
+    dedupe: z.boolean().optional().describe('Whether to check open items for likely duplicates. Defaults to true.'),
+    update_duplicates: z.boolean().optional().describe('Whether likely duplicates should be updated with provided owner/target fields. Defaults to false.'),
+  }),
+  lookup_guild_members: z.object({
+    user_id: z.string().optional().describe('Exact Discord user ID to fetch'),
+    query: z.string().optional().describe('Display name, nickname, or username search text'),
+    limit: z.number().optional().describe('Maximum matches to return (default 10, max 20)'),
+  }),
   query_events: z.object({
     include_past: z.boolean().optional().describe('Include past events. Default false.'),
   }),
@@ -287,6 +357,8 @@ const toolSchemas: Record<string, z.ZodTypeAny> = {
     playbook: z.enum(['sales_health_check', 'traffic_conversion_analysis', 'source_gap_analysis', 'capacity_projection', 'weekday_venue_hypothesis_analysis']).optional().describe('Optional analysis playbook to steer common Eventbrite analyses.'),
   }),
 };
+
+const INGEST_SUMMARY_ITEM_LIMIT = 8;
 
 /**
  * Build the AI SDK tool set for one chat turn, bound to a request-scoped
@@ -331,11 +403,18 @@ function queryItems(args: Record<string, unknown>): string {
 
   if (items.length === 0) return JSON.stringify({ items: [], message: 'No items found.' });
 
+  const ownersByItem = getOwnersForItemIds(items.map((item) => item.id));
+
   return JSON.stringify({
     items: items.map((i) => ({
       id: i.id,
       description: i.description,
       owner: i.owner_name,
+      owner_id: i.owner_id,
+      owners: ownersByItem.get(i.id)?.map((owner) => ({
+        name: owner.owner_name,
+        id: owner.owner_id,
+      })) ?? [],
       status: i.status,
       event_id: i.event_id,
       target_date: i.target_date,
@@ -363,6 +442,9 @@ function updateItem(args: Record<string, unknown>, ctx: ToolCallContext): string
   if (args.owner_name !== undefined || args.owner_id !== undefined) {
     db.prepare(`UPDATE items SET owner_name = COALESCE(?, owner_name), owner_id = COALESCE(?, owner_id) WHERE id = ?`)
       .run(args.owner_name ?? null, args.owner_id ?? null, id);
+    if (args.owner_name) {
+      setItemOwners(id, [{ owner_name: args.owner_name as string, owner_id: (args.owner_id as string | undefined) ?? null }]);
+    }
   }
   if (args.target_date !== undefined) {
     db.prepare(`UPDATE items SET target_date = ? WHERE id = ?`)
@@ -376,8 +458,13 @@ function createItemTool(args: Record<string, unknown>, ctx: ToolCallContext): st
   const description = args.description as string;
   if (!description) return JSON.stringify({ error: 'description is required' });
 
+  const eventId = args.event_id as number | undefined;
+  if (eventId !== undefined && !getEventById(eventId)) {
+    return JSON.stringify({ error: `event_id ${eventId} does not exist. Omit event_id for a general item or call query_events first.` });
+  }
+
   const id = createItem({
-    event_id: (args.event_id as number) ?? null,
+    event_id: eventId ?? null,
     description,
     owner_id: (args.owner_id as string) ?? undefined,
     owner_name: (args.owner_name as string) ?? undefined,
@@ -387,7 +474,311 @@ function createItemTool(args: Record<string, unknown>, ctx: ToolCallContext): st
     source_date: new Date().toISOString().split('T')[0],
   });
 
+  if (args.owner_name) {
+    setItemOwners(id, [{ owner_name: args.owner_name as string, owner_id: (args.owner_id as string | undefined) ?? null }]);
+  }
+
   return JSON.stringify({ success: true, item_id: id, message: `Created item #${id}: "${description}"` });
+}
+
+interface OwnerInput {
+  name?: string;
+  id?: string;
+}
+
+interface ResolvedOwner {
+  owner_name: string;
+  owner_id: string | null;
+  status: 'matched' | 'provided' | 'ambiguous' | 'unmatched';
+  candidates?: MemberSummary[];
+}
+
+interface IngestInputItem {
+  description: string;
+  owner_names?: string[];
+  owners?: OwnerInput[];
+  event_id?: number;
+  target_date?: string;
+}
+
+interface MemberSummary {
+  id: string;
+  display_name: string;
+  username: string;
+  global_name: string | null;
+}
+
+async function ingestItemsTool(args: Record<string, unknown>, ctx: ToolCallContext): Promise<string> {
+  const items = (args.items as IngestInputItem[] | undefined) ?? [];
+  if (items.length === 0) return JSON.stringify({ error: 'items is required' });
+
+  const dedupe = args.dedupe !== false;
+  const updateDuplicates = args.update_duplicates === true;
+  const existing = getAllOpenItems();
+  const db = getDb();
+
+  const report = {
+    created: [] as Array<{ item_id: number; description: string; owners: ResolvedOwner[]; event_id: number | null }>,
+    updated_duplicates: [] as Array<{ item_id: number; description: string; matched_description: string; score: number; owners: ResolvedOwner[] }>,
+    skipped_duplicates: [] as Array<{ item_id: number; description: string; matched_description: string; score: number }>,
+    failed: [] as Array<{ description: string; error: string }>,
+    warnings: [] as string[],
+  };
+
+  for (const item of items) {
+    const description = item.description?.trim();
+    if (!description) {
+      report.failed.push({ description: '', error: 'description is required' });
+      continue;
+    }
+
+    let eventId = item.event_id ?? null;
+    if (eventId !== null && !getEventById(eventId)) {
+      report.warnings.push(`Item "${description.slice(0, 80)}" used unknown event_id ${eventId}; created/updated as org-wide instead.`);
+      eventId = null;
+    }
+
+    try {
+      const owners = await resolveOwners(item);
+      const ownerRows = owners.map((owner) => ({ owner_name: owner.owner_name, owner_id: owner.owner_id }));
+      const match = dedupe ? findBestDuplicate(description, eventId, existing) : null;
+
+      if (match && updateDuplicates) {
+        if (item.target_date) {
+          db.prepare(`UPDATE items SET target_date = COALESCE(target_date, ?) WHERE id = ?`).run(item.target_date, match.item.id);
+        }
+        if (ownerRows.length > 0) {
+          setItemOwners(match.item.id, ownerRows);
+        }
+        report.updated_duplicates.push({
+          item_id: match.item.id,
+          description,
+          matched_description: match.item.description,
+          score: Number(match.score.toFixed(2)),
+          owners,
+        });
+        continue;
+      }
+
+      if (match) {
+        report.skipped_duplicates.push({
+          item_id: match.item.id,
+          description,
+          matched_description: match.item.description,
+          score: Number(match.score.toFixed(2)),
+        });
+        continue;
+      }
+
+      const firstOwner = ownerRows[0];
+      const itemId = createItem({
+        event_id: eventId,
+        description,
+        owner_id: firstOwner?.owner_id ?? undefined,
+        owner_name: ownerRows.map((owner) => owner.owner_name).join(', ') || undefined,
+        target_date: item.target_date,
+        source: `chat:${ctx.userName}:bulk`,
+        source_channel: ctx.channelId,
+        source_date: new Date().toISOString().split('T')[0],
+      });
+      if (ownerRows.length > 0) setItemOwners(itemId, ownerRows);
+
+      existing.push({
+        id: itemId,
+        event_id: eventId,
+        description,
+        owner_id: firstOwner?.owner_id ?? null,
+        owner_name: ownerRows.map((owner) => owner.owner_name).join(', ') || null,
+        status: 'open',
+        target_date: item.target_date ?? null,
+        source: `chat:${ctx.userName}:bulk`,
+        source_channel: ctx.channelId,
+        source_date: new Date().toISOString().split('T')[0],
+        last_mentioned: null,
+        created_at: new Date().toISOString(),
+      });
+
+      report.created.push({ item_id: itemId, description, owners, event_id: eventId });
+    } catch (err) {
+      report.failed.push({ description, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  return JSON.stringify({
+    success: report.failed.length === 0,
+    counts: {
+      created: report.created.length,
+      updated_duplicates: report.updated_duplicates.length,
+      skipped_duplicates: report.skipped_duplicates.length,
+      failed: report.failed.length,
+      warnings: report.warnings.length,
+    },
+    summary: formatIngestSummary(report),
+    ...report,
+  });
+}
+
+function formatIngestSummary(report: {
+  created: Array<{ item_id: number; description: string; owners: ResolvedOwner[] }>;
+  updated_duplicates: Array<{ item_id: number; description: string; matched_description: string; score: number; owners: ResolvedOwner[] }>;
+  skipped_duplicates: Array<{ item_id: number; description: string; matched_description: string; score: number }>;
+  failed: Array<{ description: string; error: string }>;
+  warnings: string[];
+}): string {
+  const lines = [
+    `Batch import: ${report.created.length} created, ${report.updated_duplicates.length} updated, ${report.skipped_duplicates.length} skipped as duplicates, ${report.failed.length} failed.`,
+  ];
+
+  if (report.created.length > 0) {
+    lines.push('', '**Created:**');
+    for (const item of report.created.slice(0, INGEST_SUMMARY_ITEM_LIMIT)) {
+      lines.push(`- #${item.item_id}: ${item.description}${formatOwnerSummary(item.owners)}`);
+    }
+    appendRemainder(lines, report.created.length, INGEST_SUMMARY_ITEM_LIMIT, 'created item');
+  }
+
+  if (report.updated_duplicates.length > 0) {
+    lines.push('', '**Updated existing:**');
+    for (const item of report.updated_duplicates.slice(0, INGEST_SUMMARY_ITEM_LIMIT)) {
+      lines.push(`- #${item.item_id}: ${item.description}${formatOwnerSummary(item.owners)} (matched existing: ${item.matched_description})`);
+    }
+    appendRemainder(lines, report.updated_duplicates.length, INGEST_SUMMARY_ITEM_LIMIT, 'updated item');
+  }
+
+  if (report.skipped_duplicates.length > 0) {
+    lines.push('', '**Skipped likely duplicates:**');
+    for (const item of report.skipped_duplicates.slice(0, INGEST_SUMMARY_ITEM_LIMIT)) {
+      lines.push(`- ${item.description} (matched #${item.item_id}: ${item.matched_description})`);
+    }
+    appendRemainder(lines, report.skipped_duplicates.length, INGEST_SUMMARY_ITEM_LIMIT, 'skipped duplicate');
+  }
+
+  if (report.failed.length > 0) {
+    lines.push('', '**Failed:**');
+    for (const item of report.failed.slice(0, INGEST_SUMMARY_ITEM_LIMIT)) {
+      lines.push(`- ${item.description || '(blank item)'}: ${item.error}`);
+    }
+    appendRemainder(lines, report.failed.length, INGEST_SUMMARY_ITEM_LIMIT, 'failed item');
+  }
+
+  if (report.warnings.length > 0) {
+    lines.push('', '**Warnings:**');
+    for (const warning of report.warnings.slice(0, INGEST_SUMMARY_ITEM_LIMIT)) lines.push(`- ${warning}`);
+    appendRemainder(lines, report.warnings.length, INGEST_SUMMARY_ITEM_LIMIT, 'warning');
+  }
+
+  const unresolvedOwners = [
+    ...report.created.flatMap((item) => item.owners),
+    ...report.updated_duplicates.flatMap((item) => item.owners),
+  ].filter((owner) => owner.status === 'ambiguous' || owner.status === 'unmatched');
+  if (unresolvedOwners.length > 0) {
+    lines.push('', '**Owner follow-up:**');
+    for (const owner of unresolvedOwners.slice(0, INGEST_SUMMARY_ITEM_LIMIT)) {
+      const candidates = owner.candidates?.map((candidate) => `${candidate.display_name} (${candidate.id})`).join(', ');
+      lines.push(`- ${owner.owner_name}: ${owner.status}${candidates ? `; candidates: ${candidates}` : ''}`);
+    }
+    appendRemainder(lines, unresolvedOwners.length, INGEST_SUMMARY_ITEM_LIMIT, 'owner needing follow-up');
+  }
+
+  return lines.join('\n');
+}
+
+function formatOwnerSummary(owners: ResolvedOwner[]): string {
+  if (owners.length === 0) return '';
+  const names = owners.map((owner) => owner.owner_id ? `${owner.owner_name} <@${owner.owner_id}>` : owner.owner_name);
+  return ` — owners: ${names.join(', ')}`;
+}
+
+function appendRemainder(lines: string[], total: number, limit: number, label: string): void {
+  const remaining = total - limit;
+  if (remaining > 0) lines.push(`- ...and ${remaining} more ${label}${remaining === 1 ? '' : 's'}.`);
+}
+
+async function resolveOwners(item: IngestInputItem): Promise<ResolvedOwner[]> {
+  const inputs: OwnerInput[] = [
+    ...(item.owners ?? []),
+    ...((item.owner_names ?? []).map((name) => ({ name }))),
+  ];
+
+  const seen = new Set<string>();
+  const owners: ResolvedOwner[] = [];
+
+  for (const input of inputs) {
+    const resolved = await resolveOwner(input);
+    const key = (resolved.owner_id ?? resolved.owner_name).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    owners.push(resolved);
+  }
+
+  return owners;
+}
+
+async function resolveOwner(input: OwnerInput): Promise<ResolvedOwner> {
+  const id = input.id?.trim();
+  const name = input.name?.trim();
+
+  if (id) {
+    const member = await fetchMemberById(id);
+    if (member) {
+      return { owner_id: member.id, owner_name: member.display_name, status: 'matched' };
+    }
+    return { owner_id: id, owner_name: name || id, status: 'provided' };
+  }
+
+  if (!name) return { owner_id: null, owner_name: 'Unknown', status: 'unmatched' };
+
+  const matches = await searchGuildMembers(name, 5);
+  const lower = name.toLowerCase();
+  const exact = matches.filter((member) =>
+    [member.display_name, member.username, member.global_name].some((candidate) => candidate?.toLowerCase() === lower)
+  );
+  const usable = exact.length > 0 ? exact : matches;
+
+  if (usable.length === 1) {
+    return { owner_id: usable[0].id, owner_name: usable[0].display_name, status: 'matched' };
+  }
+
+  if (usable.length > 1) {
+    return { owner_id: null, owner_name: name, status: 'ambiguous', candidates: usable };
+  }
+
+  return { owner_id: null, owner_name: name, status: 'unmatched' };
+}
+
+function findBestDuplicate(description: string, eventId: number | null, items: TrackerItem[]): { item: TrackerItem; score: number } | null {
+  let best: { item: TrackerItem; score: number } | null = null;
+  for (const item of items) {
+    if ((item.event_id ?? null) !== eventId) continue;
+    const score = itemSimilarity(description, item.description);
+    if (!best || score > best.score) best = { item, score };
+  }
+  return best && best.score >= 0.82 ? best : null;
+}
+
+function itemSimilarity(a: string, b: string): number {
+  const aNorm = normalizeItemText(a);
+  const bNorm = normalizeItemText(b);
+  if (aNorm === bNorm) return 1;
+  if (aNorm.includes(bNorm) || bNorm.includes(aNorm)) return 0.9;
+
+  const aTokens = new Set(aNorm.split(' ').filter(Boolean));
+  const bTokens = new Set(bNorm.split(' ').filter(Boolean));
+  if (aTokens.size === 0 || bTokens.size === 0) return 0;
+
+  const intersection = [...aTokens].filter((token) => bTokens.has(token)).length;
+  const union = new Set([...aTokens, ...bTokens]).size;
+  return intersection / union;
+}
+
+function normalizeItemText(text: string): string {
+  const stopWords = new Set(['a', 'an', 'and', 'for', 'if', 'in', 'of', 'on', 'or', 'the', 'to', 'with']);
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((token) => token.length > 1 && !stopWords.has(token))
+    .join(' ');
 }
 
 function queryEvents(args: Record<string, unknown>): string {
@@ -451,6 +842,67 @@ function listChannels(args: Record<string, unknown>): string {
     .filter((ch) => !categoryFilter || ch.category?.toLowerCase().includes(categoryFilter));
 
   return JSON.stringify({ channels });
+}
+
+async function lookupGuildMembersTool(args: Record<string, unknown>): Promise<string> {
+  const userId = (args.user_id as string | undefined)?.trim();
+  const query = (args.query as string | undefined)?.trim();
+  const limit = Math.min(Math.max((args.limit as number | undefined) ?? 10, 1), 20);
+
+  if (!userId && !query) return JSON.stringify({ error: 'user_id or query is required' });
+
+  try {
+    const guild = await getConfiguredGuild();
+    if (!guild) return JSON.stringify({ error: `Configured guild ${DISCORD_GUILD_ID} is unavailable.` });
+
+    if (userId) {
+      const member = await fetchMemberById(userId, guild);
+      return JSON.stringify({ members: member ? [member] : [] });
+    }
+
+    return JSON.stringify({ members: await searchGuildMembers(query!, limit, guild) });
+  } catch (err) {
+    log.error('lookup_guild_members failed:', err);
+    return JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+async function getConfiguredGuild(): Promise<Guild | null> {
+  return client.guilds.cache.get(DISCORD_GUILD_ID) ?? await client.guilds.fetch(DISCORD_GUILD_ID).catch(() => null);
+}
+
+async function fetchMemberById(userId: string, guild?: Guild): Promise<MemberSummary | null> {
+  guild ??= await getConfiguredGuild() ?? undefined;
+  if (!guild) return null;
+  const member = await guild.members.fetch(userId).catch(() => null);
+  return member ? summarizeMember(member) : null;
+}
+
+async function searchGuildMembers(query: string, limit: number, guild?: Guild): Promise<MemberSummary[]> {
+  guild ??= await getConfiguredGuild() ?? undefined;
+  if (!guild) return [];
+
+  const found = new Map<string, GuildMember>();
+  const fetched = await guild.members.fetch({ query, limit }).catch(() => null);
+  fetched?.forEach((member) => found.set(member.id, member));
+
+  const lower = query.toLowerCase();
+  guild.members.cache
+    .filter((member) => [member.displayName, member.user.username, member.user.globalName]
+      .some((candidate) => candidate?.toLowerCase().includes(lower)))
+    .first(limit)
+    .forEach((member) => found.set(member.id, member));
+
+  return [...found.values()].slice(0, limit).map(summarizeMember);
+}
+
+function summarizeMember(member: GuildMember): MemberSummary {
+  return {
+    id: member.id,
+    display_name: member.displayName,
+    username: member.user.username,
+    global_name: member.user.globalName,
+  };
 }
 
 function createReminderTool(args: Record<string, unknown>, ctx: ToolCallContext): string {

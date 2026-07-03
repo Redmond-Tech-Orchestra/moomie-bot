@@ -38,6 +38,31 @@ registerMigration((db) => {
       note TEXT NOT NULL,
       created_at TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS item_owners (
+      item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+      owner_id TEXT,
+      owner_name TEXT NOT NULL,
+      position INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (item_id, owner_name)
+    );
+  `);
+});
+
+registerMigration((db) => {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS item_owners (
+      item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+      owner_id TEXT,
+      owner_name TEXT NOT NULL,
+      position INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (item_id, owner_name)
+    );
+
+    INSERT OR IGNORE INTO item_owners (item_id, owner_id, owner_name, position)
+    SELECT id, owner_id, owner_name, 0
+    FROM items
+    WHERE owner_name IS NOT NULL AND trim(owner_name) != '';
   `);
 });
 
@@ -144,6 +169,52 @@ export interface TrackerItem {
   source_date: string | null;
   last_mentioned: string | null;
   created_at: string;
+}
+
+export interface TrackerItemOwner {
+  item_id: number;
+  owner_id: string | null;
+  owner_name: string;
+  position: number;
+}
+
+export function getOwnersForItemIds(itemIds: number[]): Map<number, TrackerItemOwner[]> {
+  const owners = new Map<number, TrackerItemOwner[]>();
+  if (itemIds.length === 0) return owners;
+
+  const placeholders = itemIds.map(() => '?').join(', ');
+  const rows = getDb()
+    .prepare(`SELECT * FROM item_owners WHERE item_id IN (${placeholders}) ORDER BY item_id, position, owner_name`)
+    .all(...itemIds) as TrackerItemOwner[];
+
+  for (const row of rows) {
+    const list = owners.get(row.item_id) ?? [];
+    list.push(row);
+    owners.set(row.item_id, list);
+  }
+
+  return owners;
+}
+
+export function setItemOwners(itemId: number, owners: { owner_id?: string | null; owner_name: string }[]): void {
+  const db = getDb();
+  const normalized = owners
+    .map((owner) => ({
+      owner_id: owner.owner_id ?? null,
+      owner_name: owner.owner_name.trim(),
+    }))
+    .filter((owner) => owner.owner_name.length > 0);
+
+  db.prepare(`DELETE FROM item_owners WHERE item_id = ?`).run(itemId);
+
+  const first = normalized[0];
+  db.prepare(`UPDATE items SET owner_id = ?, owner_name = ? WHERE id = ?`)
+    .run(first?.owner_id ?? null, normalized.map((owner) => owner.owner_name).join(', ') || null, itemId);
+
+  const stmt = db.prepare(`INSERT OR REPLACE INTO item_owners (item_id, owner_id, owner_name, position) VALUES (?, ?, ?, ?)`);
+  normalized.forEach((owner, position) => {
+    stmt.run(itemId, owner.owner_id, owner.owner_name, position);
+  });
 }
 
 export function getItemsForEvent(eventId: number): TrackerItem[] {
