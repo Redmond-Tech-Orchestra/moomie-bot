@@ -89,6 +89,32 @@ registerMigration((db) => {
   `);
 });
 
+// Same migration, with an explicit alias for live DBs that missed the earlier
+// quoted-column detection and still have events.date as NOT NULL.
+registerMigration((db) => {
+  const col = db.prepare(`SELECT [notnull] AS notnull FROM pragma_table_info('events') WHERE name = 'date'`).get() as { notnull: number } | undefined;
+  if (!col || !col.notnull) return;
+
+  db.exec(`
+    CREATE TABLE events_nullable_date (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      date TEXT,
+      end_date TEXT,
+      channel_id TEXT,
+      channel_name TEXT,
+      confirmed INTEGER DEFAULT 0,
+      archived INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    INSERT INTO events_nullable_date (id, name, date, end_date, channel_id, channel_name, confirmed, archived, created_at)
+    SELECT id, name, date, end_date, channel_id, channel_name, confirmed, archived, created_at
+    FROM events;
+    DROP TABLE events;
+    ALTER TABLE events_nullable_date RENAME TO events;
+  `);
+});
+
 // ─── Event Queries ───────────────────────────────────────────────────────────
 
 export interface TrackerEvent {
