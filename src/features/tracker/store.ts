@@ -68,10 +68,11 @@ registerMigration((db) => {
 
 // Make events.date nullable (existing DBs have NOT NULL from the original schema)
 registerMigration((db) => {
-  const col = db.prepare(`SELECT "notnull" FROM pragma_table_info('events') WHERE name = 'date'`).get() as { notnull: number } | undefined;
+  const col = db.prepare(`SELECT * FROM pragma_table_info('events') WHERE name = 'date'`).get() as { notnull: number } | undefined;
   if (!col || !col.notnull) return; // already nullable or table doesn't exist yet
 
   db.exec(`
+    DROP TABLE IF EXISTS events_new;
     CREATE TABLE events_new (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
@@ -96,6 +97,7 @@ registerMigration((db) => {
   if (!col || !col.notnull) return;
 
   db.exec(`
+    DROP TABLE IF EXISTS events_nullable_date;
     CREATE TABLE events_nullable_date (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
