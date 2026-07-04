@@ -129,7 +129,7 @@ async function sendChunked(
 }
 function formatOrgBoard(): string {
   const items = getOrphanItems();
-  const lines: string[] = ['## 🔧 Org-wide Items\n'];
+  const lines: string[] = ['## 🐮 Org-wide Items\n'];
 
   if (items.length === 0) {
     lines.push('No org-wide items tracked.');
@@ -157,7 +157,7 @@ function formatEventBoard(event: TrackerEvent): string {
   const items = getItemsForEvent(event.id).filter((i) => i.status !== 'done');
   const heading = event.date && event.date !== TRACKER_SWIMLANE_DATE
     ? `## 🎵 ${event.name} (${formatDate(event.date)}) — ${formatTMinus(event.date)}\n`
-    : `## 📌 ${event.name}\n`;
+    : `## ${formatSwimlaneEmoji(event)} ${event.name}\n`;
 
   const lines: string[] = [heading];
 
@@ -199,6 +199,15 @@ function formatEventBoard(event: TrackerEvent): string {
   }
 
   return lines.join('\n');
+}
+
+function formatSwimlaneEmoji(event: TrackerEvent): string {
+  const name = event.name.toLowerCase();
+  if (name === 'logistics') return '📋';
+  if (name === 'marketing') return '🎟️';
+  if (name === 'technology') return '💻';
+  if (name === 'librarians') return '📄';
+  return '📌';
 }
 
 function formatItem(item: TrackerItem, icon: string): string {
