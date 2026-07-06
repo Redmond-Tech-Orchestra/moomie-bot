@@ -283,16 +283,27 @@ export interface AnalyzeResult {
   error?: string;
 }
 
+export type AnalyzeProgress = (update: string) => void | Promise<void>;
+
 // ─── Public entry point ──────────────────────────────────────────────────────
 
-export async function analyze(question: string, context?: string, playbook?: string): Promise<AnalyzeResult> {
+export async function analyze(question: string, context?: string, playbook?: string, onProgress?: AnalyzeProgress): Promise<AnalyzeResult> {
   const t0 = Date.now();
+  const emitProgress = async (update: string): Promise<void> => {
+    try {
+      await onProgress?.(update);
+    } catch (err) {
+      log.warn('Analyze progress callback failed:', err);
+    }
+  };
   if (!hasLlmKey()) {
     return errorResult(t0, 'LLM API key is not set');
   }
 
   const dataDirAbs = resolve(EVENTBRITE_DATA_DIR);
+  await emitProgress('Refreshing live Eventbrite snapshots before analysis…');
   const liveSnapshotContext = await refreshActiveEventSnapshotsForAnalysis();
+  await emitProgress(liveSnapshotContext ? 'Live snapshots refreshed; starting analyst loop…' : 'No active Eventbrite snapshots needed; starting analyst loop…');
 
   if (!existsSync(dataDirAbs)) {
     return errorResult(t0, `Archive dir does not exist: ${dataDirAbs}. Run sync_eventbrite_archive first.`);
@@ -322,6 +333,7 @@ export async function analyze(question: string, context?: string, playbook?: str
       }),
       execute: async ({ code, reason }) => {
         iter++;
+        await emitProgress(`Iteration ${iter}: ${reason?.trim() || 'running Python against the archive'} (${code.length} bytes of code).`);
         const result = await runPython({
           code,
           prelude: eventbriteKernelPrelude(),
@@ -353,6 +365,10 @@ export async function analyze(question: string, context?: string, playbook?: str
           `iter=${iter} code=${code.length}b exit=${result.exit_code} dur=${result.duration_ms}ms stdout=${result.stdout.length}b stderr=${result.stderr.length}b files=${filesProduced.length}${result.timed_out ? ' TIMED_OUT' : ''}`,
         );
 
+        await emitProgress(
+          `Iteration ${iter} finished: exit=${result.exit_code}, ${(result.duration_ms / 1000).toFixed(1)}s, stdout=${result.stdout.length}b, stderr=${result.stderr.length}b${filesProduced.length ? `, files=${filesProduced.join(', ')}` : ''}.`,
+        );
+
         return {
           exit_code: result.exit_code,
           stdout: result.stdout,
@@ -372,6 +388,7 @@ export async function analyze(question: string, context?: string, playbook?: str
         summary: z.string().optional().describe('Brief note on what you did to arrive at this.'),
       }),
       execute: async ({ answer, summary }) => {
+        await emitProgress('Finalizing Eventbrite analysis answer…');
         finalizeAnswer = answer ?? null;
         finalizeSummary = summary ?? null;
         return { ok: true };
@@ -380,6 +397,7 @@ export async function analyze(question: string, context?: string, playbook?: str
   };
 
   try {
+    await emitProgress(`Starting Eventbrite analyst loop (up to ${MAX_ITERATIONS} iterations)…`);
     const result = await generateText({
       model: getModel('extract'),
       system: systemPrompt,

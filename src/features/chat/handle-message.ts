@@ -34,6 +34,7 @@ export interface ToolCallSnap {
   ms?: number;
   resultSummary?: string;
   filesProduced?: string[];
+  progress?: string[];
 }
 
 /** Snapshot of one tool-loop round. */
@@ -124,6 +125,21 @@ export async function handleChatMessage(
     channelId: message.channelId,
     userName: message.userName,
     files: collectedFiles,
+    onToolProgress: async (toolName: string, update: string) => {
+      const snap = ensureActiveRound();
+      const toolCall = [...snap.toolCalls].reverse().find((tc) => tc.name === toolName)
+        ?? upsertToolCall(snap, `progress:${toolName}`, {
+          toolCallId: `progress:${toolName}`,
+          name: toolName,
+          args: {},
+          status: 'running',
+        });
+      toolCall.progress ??= [];
+      if (toolCall.progress[toolCall.progress.length - 1] !== update) {
+        toolCall.progress.push(update);
+      }
+      await emit(false);
+    },
   };
 
   const wrap = (text: string): ChatReply =>
@@ -196,12 +212,14 @@ export async function handleChatMessage(
         snap.text = snap.text?.trim() || (step.toolCalls.length > 0 && step.text ? step.text.trim() : undefined);
         snap.toolCalls = step.toolCalls.map((tc) => {
           const tr = step.toolResults.find((r) => r.toolCallId === tc.toolCallId);
+          const existing = snap.toolCalls.find((existingCall) => existingCall.toolCallId === tc.toolCallId);
           return {
             toolCallId: tc.toolCallId,
             name: tc.toolName,
             args: (tc.input ?? {}) as Record<string, unknown>,
             status: tr ? ('done' as const) : ('running' as const),
             resultSummary: tr ? summarizeResult(tr.output) : undefined,
+            progress: existing?.progress,
           };
         });
         activeRound = undefined;
@@ -239,11 +257,15 @@ function summarizeResult(result: unknown): string {
   }
 }
 
-function upsertToolCall(snap: RoundSnap, toolCallId: string, update: ToolCallSnap): void {
+function upsertToolCall(snap: RoundSnap, toolCallId: string, update: ToolCallSnap): ToolCallSnap {
   const existing = snap.toolCalls.find((tc) => tc.toolCallId === toolCallId);
   if (existing) {
+    const progress = existing.progress;
     Object.assign(existing, update);
+    if (progress && !existing.progress) existing.progress = progress;
+    return existing;
   } else {
     snap.toolCalls.push(update);
+    return update;
   }
 }
