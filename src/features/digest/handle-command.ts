@@ -39,7 +39,7 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
   }
 
   const transcript = formatTranscript(channelData);
-  const digest = await generateDigest(transcript, window);
+  const digest = await generateDigest(transcript);
 
   // Discord has a 2000-char message limit; split if needed
   if (digest.length <= 2000) {
@@ -95,7 +95,7 @@ function formatTranscript(channels: ChannelMessages[]): string {
   return result;
 }
 
-async function generateDigest(transcript: string, window: string): Promise<string> {
+async function generateDigest(transcript: string): Promise<string> {
   if (!hasLlmKey()) return '*LLM API key not configured.*';
 
   const events = getActiveEvents();

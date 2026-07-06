@@ -1,8 +1,6 @@
-import { ChannelType } from 'discord.js';
-import type { Guild, GuildMember, TextChannel } from 'discord.js';
 import { tool, type Tool } from 'ai';
 import { z } from 'zod';
-import { client } from '../../adapters/discord.js';
+import { ChannelType, client, type Guild, type GuildMember, type TextChannel } from '../../adapters/index.js';
 import { getDb } from '../../db.js';
 import { DISCORD_GUILD_ID } from '../../config.js';
 import {
@@ -274,8 +272,8 @@ interface ToolCallContext {
 export async function executeTool(name: string, args: Record<string, unknown>, ctx: ToolCallContext): Promise<string> {
   switch (name) {
     case 'query_items': return queryItems(args);
-    case 'resolve_item': return resolveItem(args, ctx);
-    case 'update_item': return updateItem(args, ctx);
+    case 'resolve_item': return resolveItem(args);
+    case 'update_item': return updateItem(args);
     case 'create_item': return createItemTool(args, ctx);
     case 'ingest_items': return ingestItemsTool(args, ctx);
     case 'lookup_guild_members': return lookupGuildMembersTool(args);
@@ -445,7 +443,7 @@ function queryItems(args: Record<string, unknown>): string {
   });
 }
 
-function resolveItem(args: Record<string, unknown>, ctx: ToolCallContext): string {
+function resolveItem(args: Record<string, unknown>): string {
   const id = args.item_id as number;
   if (!id) return JSON.stringify({ error: 'item_id is required' });
 
@@ -453,7 +451,7 @@ function resolveItem(args: Record<string, unknown>, ctx: ToolCallContext): strin
   return JSON.stringify({ success: true, message: `Item #${id} marked as done.` });
 }
 
-function updateItem(args: Record<string, unknown>, ctx: ToolCallContext): string {
+function updateItem(args: Record<string, unknown>): string {
   const id = args.item_id as number;
   if (!id) return JSON.stringify({ error: 'item_id is required' });
 
@@ -1151,7 +1149,7 @@ async function requestWebsiteUpdateTool(args: Record<string, unknown>, ctx: Tool
       return undefined;
     };
 
-    const { issueUrl, threadId } = await (executeWebsiteUpdate as any)({
+    const { issueUrl, threadId } = await executeWebsiteUpdate({
       task,
       platform: 'discord',
       userId: ctx.userId,

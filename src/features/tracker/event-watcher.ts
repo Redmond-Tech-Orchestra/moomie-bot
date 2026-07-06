@@ -1,5 +1,4 @@
-import type { Client, TextChannel, CategoryChannel } from 'discord.js';
-import { ChannelType } from 'discord.js';
+import { ChannelType, type CategoryChannel, type Client, type TextChannel } from '../../adapters/index.js';
 import { z } from 'zod';
 import { parseChannelName, computeEventDates } from './parse-channel.js';
 import {
@@ -246,7 +245,7 @@ async function syncPerformanceChannel(channel: TextChannel, logNew: boolean = fa
     confirmed: false,
   });
 
-  await askForConfirmation(channel, parsed, eventId);
+  await askForConfirmation(channel, parsed);
   attributeOrphansToEvent(eventId).catch(() => {});
   if (logNew) log.info(`New event detected: ${parsed.name} (${date})`);
   return true;
@@ -324,7 +323,7 @@ function displayNameFromChannel(channelName: string): string {
 /**
  * Post a confirmation message in the channel asking about event details.
  */
-async function askForConfirmation(channel: TextChannel, parsed: ReturnType<typeof parseChannelName> & {}, eventId?: number): Promise<void> {
+async function askForConfirmation(channel: TextChannel, parsed: ReturnType<typeof parseChannelName> & {}): Promise<void> {
   try {
     if (parsed.ambiguous) {
       await channel.send(

@@ -15,11 +15,11 @@ export const description = 'Create a website issue and have Moomie work on it';
 export interface WebsiteUpdateOptions {
   task: string;
   attachments?: { name: string; url: string }[];
-  platform: string;
+  platform: 'discord' | 'teams';
   userId: string;
   userName: string;
   channelId: string;
-  conversationRef?: any;
+  conversationRef?: string;
   /** Callback to start a thread if possible */
   startThread?: (title: string) => Promise<string | undefined>;
 }
@@ -68,8 +68,8 @@ export async function executeWebsiteUpdate(opts: WebsiteUpdateOptions): Promise<
   trackIssue(issue.number, GITHUB_REPO, {
     channelId: trackingChannelId,
     userId: userId,
-    platform: platform as any,
-    conversationRef: conversationRef,
+    platform,
+    conversationRef,
   });
 
   // Kickoff message in thread

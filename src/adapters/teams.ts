@@ -61,7 +61,7 @@ function buildContext(turnContext: TurnContext, overrides?: { targetUserId?: str
     targetUserId: overrides?.targetUserId,
     targetChannelId: overrides?.targetChannelId,
     conversationRef: getConversationRef(turnContext),
-    reply: async (text: string, _components?: unknown[]) => {
+    reply: async (text: string) => {
       await turnContext.sendActivity(text);
     },
     deferReply: async () => {
@@ -70,10 +70,10 @@ function buildContext(turnContext: TurnContext, overrides?: { targetUserId?: str
         await turnContext.sendActivity({ type: ActivityTypes.Typing });
       }
     },
-    editReply: async (text: string, _components?: unknown[]) => {
+    editReply: async (text: string) => {
       await turnContext.sendActivity(text);
     },
-    followUp: async (text: string, _components?: unknown[]) => {
+    followUp: async (text: string) => {
       // Teams doesn't render Discord components; degrade to text only.
       await turnContext.sendActivity(text);
     },

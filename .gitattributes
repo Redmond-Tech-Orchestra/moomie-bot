@@ -1,4 +1,5 @@
-# Shell scripts must use LF — they run on the Linux server and break with CRLF
-# (e.g. `set -euo pipefail\r` → "invalid option name"). Keep this enforced so
+.githooks/* text eol=lf
+# Shell scripts must use LF; they run on Linux/Bash and break with CRLF.
+# (e.g. `set -euo pipefail\r` -> "invalid option name"). Keep this enforced so
 # deploys from Windows checkouts don't reintroduce carriage returns.
 *.sh text eol=lf
