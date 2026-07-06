@@ -9,6 +9,7 @@
     "start": "node dist/index.js",
     "dev": "tsx --watch src/index.ts",
     "lint": "eslint src/",
+    "install-hooks": "git config core.hooksPath .githooks",
     "deploy-commands": "tsx src/deploy-commands.ts",
     "deploy": "powershell -ExecutionPolicy Bypass -File deploy.ps1"
   },

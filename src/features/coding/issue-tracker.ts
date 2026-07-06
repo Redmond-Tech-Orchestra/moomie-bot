@@ -1,5 +1,4 @@
 import { getDb, registerMigration } from '../../db.js';
-import { GITHUB_REPO } from '../../config.js';
 
 registerMigration((db) => {
   // Migrate from single-key to compound-key schema if needed.

@@ -5,7 +5,7 @@ import { TRACKER_SWIMLANE_DATE } from '../../config.js';
 export const name = 'events';
 export const description = 'List upcoming orchestra events';
 
-export async function execute(ctx: CommandContext, _args: string): Promise<void> {
+export async function execute(ctx: CommandContext): Promise<void> {
   const events = getActiveEvents().filter((event) => event.date !== TRACKER_SWIMLANE_DATE);
 
   if (events.length === 0) {

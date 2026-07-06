@@ -1,5 +1,4 @@
-import type { Client, Message, TextChannel } from 'discord.js';
-import { ChannelType, MessageFlags } from 'discord.js';
+import { ChannelType, MessageFlags, type Client, type Message, type TextChannel } from '../../adapters/index.js';
 import { z } from 'zod';
 import { loadPrompt } from '../../prompts/load-prompt.js';
 import { ARCHIVED_CATEGORY_ID, TRACKER_IGNORED_CHANNEL_IDS, TRACKER_SWIMLANE_DATE, modelFor } from '../../config.js';

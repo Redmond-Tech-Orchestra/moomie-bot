@@ -1,4 +1,4 @@
-import type { AutocompleteInteraction } from 'discord.js';
+import type { AutocompleteInteraction } from '../../adapters/index.js';
 import { getActiveEvents, getOrphanItems } from './store.js';
 import { createLogger } from '../../logger.js';
 import { TRACKER_SWIMLANE_DATE } from '../../config.js';

@@ -6,7 +6,7 @@ import {
   type APISelectMenuOption,
   type StringSelectMenuComponent,
   type StringSelectMenuInteraction,
-} from 'discord.js';
+} from '../../adapters/index.js';
 import { getDb } from '../../db.js';
 import { markItemDone, type TrackerItem } from './store.js';
 import { createLogger } from '../../logger.js';
