@@ -10,8 +10,8 @@
 # A naive `docker compose up -d --build` recreates the container and kills the
 # in-flight job. Instead we:
 #   1. Build the new image (does NOT touch the running container).
-#   2. Ask the bot to drain (finish the current job, stop taking new ones).
-#   3. Wait for the running job to settle, capped at one job timeout.
+#   2. Ask the bot to drain (finish active coding/chat work, stop taking new work).
+#   3. Wait for running work to settle, capped at one job timeout.
 #   4. Swap to the new image.
 #
 # Queued jobs are persisted in the coding_jobs table and resume on startup, so
@@ -58,7 +58,7 @@ docker compose build
 if [ "$FORCE" = "1" ]; then
   echo "==> Skipping drain wait (force)."
 else
-  echo "==> Asking bot to drain (finish current job, stop new pickups)…"
+  echo "==> Asking bot to drain (finish active work, stop new pickups)…"
   if curl -fsS -X POST -H 'Content-Type: application/json' "${token_header[@]}" \
        --data '{"drain":true}' "$STATUS_URL/drain" >/dev/null 2>&1; then
     drained=1
@@ -66,22 +66,24 @@ else
     echo "   (drain endpoint unavailable — older build or bot down; continuing)"
   fi
 
-  echo "==> Waiting for the in-flight job to finish (max ${MAX_WAIT_SECONDS}s)…"
+  echo "==> Waiting for in-flight work to finish (max ${MAX_WAIT_SECONDS}s)…"
   deadline=$(( $(date +%s) + MAX_WAIT_SECONDS ))
   while :; do
     s="$(curl -fsS "$STATUS_URL/status" 2>/dev/null || echo '')"
     running="$(printf '%s' "$s" | jq -r '.queue.running // false' 2>/dev/null || echo false)"
     queued="$(printf '%s' "$s" | jq -r '.queue.queued // 0' 2>/dev/null || echo 0)"
-    if [ "$running" != "true" ]; then
+    active_chat="$(printf '%s' "$s" | jq -r '.chat.active // 0' 2>/dev/null || echo 0)"
+    if [ "$running" != "true" ] && [ "$active_chat" = "0" ]; then
       echo "   idle (${queued} queued job(s) will resume after the swap)."
       break
     fi
     if [ "$(date +%s)" -ge "$deadline" ]; then
-      echo "   still running after ${MAX_WAIT_SECONDS}s — deploying anyway (job will be recovered + retried)."
+      echo "   still running after ${MAX_WAIT_SECONDS}s — deploying anyway (jobs recover; chat turns are interrupted)."
       break
     fi
     mins="$(printf '%s' "$s" | jq -r '.queue.runningForMin // 0' 2>/dev/null || echo 0)"
-    echo "   job running (${mins}min) — waiting…"
+    chat_mins="$(printf '%s' "$s" | jq -r '.chat.oldestActiveForMin // 0' 2>/dev/null || echo 0)"
+    echo "   coding=${running} (${mins}min), chat=${active_chat} (${chat_mins}min) — waiting…"
     sleep 15
   done
 fi

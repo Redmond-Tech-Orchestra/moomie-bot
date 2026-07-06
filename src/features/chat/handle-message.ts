@@ -1,4 +1,4 @@
-import { generateText, stepCountIs } from 'ai';
+import { streamText, stepCountIs } from 'ai';
 import { loadPrompt } from '../../prompts/load-prompt.js';
 import { buildChatTools, type ChatFile } from './tools.js';
 import { modelFor } from '../../config.js';
@@ -27,6 +27,7 @@ export interface ChatReply {
 
 /** Per-tool-call state inside a round. */
 export interface ToolCallSnap {
+  toolCallId?: string;
   name: string;
   args: Record<string, unknown>;
   status: 'running' | 'done' | 'error';
@@ -71,6 +72,15 @@ export async function handleChatMessage(
 ): Promise<ChatReply> {
   const startedAt = Date.now();
   const rounds: RoundSnap[] = [];
+  let activeRound: RoundSnap | undefined;
+
+  const ensureActiveRound = (): RoundSnap => {
+    if (!activeRound) {
+      activeRound = { n: rounds.length + 1, toolCalls: [] };
+      rounds.push(activeRound);
+    }
+    return activeRound;
+  };
 
   const emit = async (done: boolean, finalText?: string, error?: string): Promise<void> => {
     if (!onProgress) return;
@@ -138,7 +148,7 @@ export async function handleChatMessage(
   };
 
   try {
-    const result = await generateText({
+    const result = streamText({
       model: getModel('chat'),
       system: systemPrompt,
       prompt: message.content,
@@ -150,30 +160,59 @@ export async function handleChatMessage(
       providerOptions: {
         google: { thinkingConfig: { includeThoughts: true, thinkingBudget: 2048 } },
       },
+      onChunk: async ({ chunk }) => {
+        const snap = ensureActiveRound();
+        if (chunk.type === 'reasoning-delta') {
+          snap.thought = (snap.thought ?? '') + chunk.text;
+          await emit(false);
+        } else if (chunk.type === 'text-delta') {
+          snap.text = (snap.text ?? '') + chunk.text;
+          await emit(false);
+        } else if (chunk.type === 'tool-call') {
+          upsertToolCall(snap, chunk.toolCallId, {
+            toolCallId: chunk.toolCallId,
+            name: chunk.toolName,
+            args: (chunk.input ?? {}) as Record<string, unknown>,
+            status: 'running',
+          });
+          await emit(false);
+        } else if (chunk.type === 'tool-result') {
+          upsertToolCall(snap, chunk.toolCallId, {
+            toolCallId: chunk.toolCallId,
+            name: chunk.toolName,
+            args: (chunk.input ?? {}) as Record<string, unknown>,
+            status: 'done',
+            resultSummary: summarizeResult(chunk.output),
+          });
+          await emit(false);
+        }
+      },
       onStepFinish: async (step) => {
         totalTokensIn += step.usage?.inputTokens ?? 0;
         totalTokensOut += step.usage?.outputTokens ?? 0;
         for (const tc of step.toolCalls) toolsUsed.push(tc.toolName);
-        const snap: RoundSnap = {
-          n: rounds.length + 1,
-          thought: step.reasoningText?.trim() || undefined,
-          text: step.toolCalls.length > 0 && step.text ? step.text.trim() : undefined,
-          toolCalls: step.toolCalls.map((tc) => {
-            const tr = step.toolResults.find((r) => r.toolCallId === tc.toolCallId);
-            return {
-              name: tc.toolName,
-              args: (tc.input ?? {}) as Record<string, unknown>,
-              status: tr ? ('done' as const) : ('running' as const),
-              resultSummary: tr ? summarizeResult(tr.output) : undefined,
-            };
-          }),
-        };
-        rounds.push(snap);
+        const snap = ensureActiveRound();
+        snap.thought = snap.thought?.trim() || step.reasoningText?.trim() || undefined;
+        snap.text = snap.text?.trim() || (step.toolCalls.length > 0 && step.text ? step.text.trim() : undefined);
+        snap.toolCalls = step.toolCalls.map((tc) => {
+          const tr = step.toolResults.find((r) => r.toolCallId === tc.toolCallId);
+          return {
+            toolCallId: tc.toolCallId,
+            name: tc.toolName,
+            args: (tc.input ?? {}) as Record<string, unknown>,
+            status: tr ? ('done' as const) : ('running' as const),
+            resultSummary: tr ? summarizeResult(tr.output) : undefined,
+          };
+        });
+        activeRound = undefined;
         await emit(false);
+      },
+      onError: ({ error }) => {
+        log.error('Chat LLM stream error:', error);
       },
     });
 
-    const reply = result.text?.trim() || 'Moo.';
+    const reply = (await result.text).trim() || 'Moo.';
     const toolSummary = toolsUsed.length > 0 ? ` [tools: ${toolsUsed.join(', ')}]` : '';
     const fileSummary = collectedFiles.length > 0 ? ` [files: ${collectedFiles.map((f) => f.name).join(', ')}]` : '';
     auditChat(reply.slice(0, 500) + toolSummary + fileSummary);
@@ -197,5 +236,14 @@ function summarizeResult(result: unknown): string {
     return s.length > 500 ? s.slice(0, 500) + '…' : s;
   } catch {
     return String(result).slice(0, 500);
+  }
+}
+
+function upsertToolCall(snap: RoundSnap, toolCallId: string, update: ToolCallSnap): void {
+  const existing = snap.toolCalls.find((tc) => tc.toolCallId === toolCallId);
+  if (existing) {
+    Object.assign(existing, update);
+  } else {
+    snap.toolCalls.push(update);
   }
 }
