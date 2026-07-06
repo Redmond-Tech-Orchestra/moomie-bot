@@ -30,7 +30,7 @@ import { snapshotEvent } from './snapshot.js';
 
 const log = createLogger('Eventbrite.analyze');
 
-const MAX_ITERATIONS = 5;
+const MAX_ITERATIONS = 25;
 const PYTHON_TIMEOUT_MS = 60_000;
 
 // ─── Schema doc (embedded in Pro's prompt) ───────────────────────────────────
