@@ -267,6 +267,8 @@ interface ToolCallContext {
   userName: string;
   /** Mutable per-request collector; tools push attachments here. */
   files: ChatFile[];
+  /** Optional live progress reporter for long-running tool work. */
+  onToolProgress?: (toolName: string, update: string) => void | Promise<void>;
 }
 
 export async function executeTool(name: string, args: Record<string, unknown>, ctx: ToolCallContext): Promise<string> {
@@ -1093,7 +1095,9 @@ async function analyzeEventbriteTool(args: Record<string, unknown>, ctx: ToolCal
   const context = args.context as string | undefined;
   const playbook = args.playbook as string | undefined;
   try {
-    const result = await analyzeEventbrite(question, context, playbook);
+    const result = await analyzeEventbrite(question, context, playbook, async (update) => {
+      await ctx.onToolProgress?.('analyze_eventbrite', update);
+    });
     // Surface any artifacts (CSV exports, chart PNGs) up to the chat layer so
     // they get attached to the Discord reply.
     const filesProduced: string[] = [];

@@ -10,7 +10,7 @@
  *    call, or >5s elapsed) so cheap "hi" replies stay clean.
  */
 
-import type { ChatProgress, RoundSnap, ToolCallSnap } from './handle-message.js';
+import type { ChatProgress, ToolCallSnap } from './handle-message.js';
 
 /** Discord per-message hard limit is 2000. Leave a little headroom so the
  *  tail-marker and any trailing space don't push us over. */
@@ -42,6 +42,9 @@ export function renderLive(snap: ChatProgress): string {
     }
     for (const tc of r.toolCalls) {
       lines.push(renderToolLine(tc));
+      for (const update of liveToolProgress(tc)) {
+        lines.push(`> ${update}`);
+      }
     }
   }
   const body = lines.join('\n\n');
@@ -73,6 +76,9 @@ export function renderTrail(snap: ChatProgress): string {
     }
     for (const tc of r.toolCalls) {
       lines.push(renderToolLine(tc));
+      for (const update of tc.progress ?? []) {
+        lines.push(`> ${update}`);
+      }
     }
   }
   return lines.join('\n');
@@ -85,6 +91,11 @@ function renderToolLine(tc: ToolCallSnap): string {
   // Inline-code the tool name; show first key arg as a hint (often a question/query).
   const hint = renderArgsHint(tc.args);
   return `🔧 \`${tc.name}\`${hint} ${icon}${time}${files}`;
+}
+
+function liveToolProgress(tc: ToolCallSnap): string[] {
+  const progress = tc.progress ?? [];
+  return progress.length <= 8 ? progress : ['…', ...progress.slice(-7)];
 }
 
 function renderArgsHint(args: Record<string, unknown>): string {
