@@ -5,6 +5,7 @@ import { warmupRepo, forceResetQueue, recoverJobs } from './features/coding/job-
 import { getDb } from './db.js';
 import { startLogPruning } from './logger.js';
 import { reapStaleSandboxes } from './features/sandbox/python-runner.js';
+import { interruptActiveChatTurns } from './features/chat/active-turns.js';
 
 // ─── Validate required env vars (secrets only — non-secrets have defaults in config.ts) ──
 const required = ['DISCORD_TOKEN', 'GITHUB_APP_PRIVATE_KEY_PATH'];
@@ -41,15 +42,19 @@ reapStaleSandboxes()
 console.log('Moomie bot is running.');
 
 // ─── Graceful shutdown ───────────────────────────────────────────────────────
-function shutdown(signal: string) {
+async function shutdown(signal: string) {
   console.log(`[Shutdown] Received ${signal}, cleaning up...`);
+  await Promise.race([
+    interruptActiveChatTurns(`shutdown ${signal}`),
+    new Promise((resolve) => setTimeout(resolve, 5000)),
+  ]);
   client.destroy();
-  try { getDb().close(); } catch {}
+  try { getDb().close(); } catch { /* best effort during shutdown */ }
   process.exit(0);
 }
 
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => { void shutdown('SIGINT'); });
+process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
 process.on('SIGUSR1', () => {
   const { drained } = forceResetQueue();
   console.log(`[Admin] SIGUSR1 received — queue reset, ${drained} job(s) drained`);

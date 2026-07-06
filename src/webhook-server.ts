@@ -10,6 +10,7 @@ import { startTeams } from './adapters/teams.js';
 import { getUploadsDir } from './features/website/attachment-store.js';
 import { initNotifications, initActivity, notifyUser } from './adapters/index.js';
 import { mountMcp } from './features/admin/mcp-server.js';
+import { getChatTurnStatus, setChatDraining } from './features/chat/active-turns.js';
 import { PORT, GITHUB_REPO } from './config.js';
 import { createLogger } from './logger.js';
 
@@ -94,21 +95,27 @@ export function startServer(discordClient: Client): express.Express {
   });
 
   app.get('/status', (_req: Request, res: Response) => {
-    const status = getQueueStatus();
+    const queueStatus = getQueueStatus();
+    const chatStatus = getChatTurnStatus();
     res.json({
       ok: true,
       queue: {
-        running: status.running,
-        queued: status.queued,
-        runningForMin: status.runningForMs ? Math.round(status.runningForMs / 60000) : null,
-        draining: status.draining,
+        running: queueStatus.running,
+        queued: queueStatus.queued,
+        runningForMin: queueStatus.runningForMs ? Math.round(queueStatus.runningForMs / 60000) : null,
+        draining: queueStatus.draining,
+      },
+      chat: {
+        active: chatStatus.active,
+        oldestActiveForMin: chatStatus.oldestActiveForMs ? Math.round(chatStatus.oldestActiveForMs / 60000) : null,
+        draining: chatStatus.draining,
       },
     });
   });
 
-  // Deploy-time drain control. Flipping drain on lets the in-flight coding job
+  // Deploy-time drain control. Flipping drain on lets in-flight coding/chat work
   // finish while blocking new pickups, so a deploy can swap the container without
-  // killing a running job. Guarded because nginx proxies all paths publicly:
+  // orphaning active thinking placeholders. Guarded because nginx proxies all paths publicly:
   // require a matching DEPLOY_TOKEN header, or — if no token is configured —
   // only accept direct loopback calls (no proxy headers), which is how the
   // server-side deploy script reaches it.
@@ -116,7 +123,8 @@ export function startServer(discordClient: Client): express.Express {
     if (!isLocalDeployRequest(req)) return res.status(403).json({ ok: false, error: 'forbidden' });
     const drain = req.body?.drain !== false; // default true
     setDraining(drain);
-    res.json({ ok: true, draining: drain, queue: getQueueStatus() });
+    setChatDraining(drain);
+    res.json({ ok: true, draining: drain, queue: getQueueStatus(), chat: getChatTurnStatus() });
   });
 
   // Register Teams bot endpoint

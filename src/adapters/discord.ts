@@ -17,6 +17,7 @@ import { isBoardSelect, handleBoardSelect } from '../features/tracker/board-inte
 import { handleChatMessage } from '../features/chat/handle-message.js';
 import type { ChatProgress } from '../features/chat/handle-message.js';
 import { renderLive, renderTrail, isInteresting } from '../features/chat/progress-render.js';
+import { isChatDraining, registerChatTurn } from '../features/chat/active-turns.js';
 import { chunkText, DISCORD_CHUNK_MAX } from './chunk.js';
 import { commentOnPR } from '../features/coding/github-client.js';
 import { trackPR } from '../features/coding/issue-tracker.js';
@@ -341,96 +342,110 @@ export async function startDiscord(): Promise<void> {
     try {
       await message.channel.sendTyping();
 
+      if (isChatDraining()) {
+        await message.reply('Moomie is updating right now. Please retry in a minute.');
+        return;
+      }
+
+      const chatTurn = registerChatTurn();
+
       // Send a placeholder reply we'll edit-in-place as the model thinks.
       // Edits don't notify in Discord, so the user gets a single ping and
       // then sees the message evolve.
       const placeholder = await message.reply('💭 _Thinking…_');
+      chatTurn.setInterrupt(async () => {
+        await placeholder.edit('Interrupted by a Moomie deploy. Please retry this request.').catch(() => undefined);
+      });
 
-      // Debounced editor so a burst of round updates doesn't hammer Discord.
-      let lastEditAt = 0;
-      let lastRendered = '';
-      const MIN_EDIT_INTERVAL_MS = 600;
-      const onProgress = async (snap: ChatProgress): Promise<void> => {
-        if (snap.done) return; // final state is handled below
-        const now = Date.now();
-        if (now - lastEditAt < MIN_EDIT_INTERVAL_MS) return;
-        const next = renderLive(snap);
-        if (next === lastRendered) return;
-        lastEditAt = now;
-        lastRendered = next;
-        try {
-          await placeholder.edit(next);
-        } catch (err) {
-          log.warn('Failed to edit placeholder:', err);
-        }
-      };
-
-      let response;
       try {
-        response = await handleChatMessage({
-          userId: message.author.id,
-          userName: message.member?.displayName ?? message.author.displayName ?? message.author.username,
-          channelId: message.channelId,
-          channelName: message.channel.isDMBased()
-            ? 'DM'
-            : (('name' in message.channel && message.channel.name) || 'unknown'),
-          content,
-        }, onProgress);
-      } catch (innerErr) {
-        log.error('handleChatMessage threw:', innerErr);
-        await placeholder.edit('Something went wrong. Moo. 🐄').catch(() => undefined);
-        return;
-      }
-
-      const chunks = chunkText(response.text, DISCORD_CHUNK_MAX);
-      const attachments = response.files?.map(
-        (f) => new AttachmentBuilder(f.data, { name: f.name, description: f.description }),
-      );
-      // Replace the placeholder with the first chunk + any attachments.
-      try {
-        await placeholder.edit(
-          attachments && attachments.length > 0
-            ? { content: chunks[0], files: attachments }
-            : { content: chunks[0] },
-        );
-      } catch (err) {
-        log.warn('Failed to edit final reply, sending as new message:', err);
-        await message.reply(
-          attachments && attachments.length > 0
-            ? { content: chunks[0], files: attachments }
-            : chunks[0],
-        );
-      }
-      for (let i = 1; i < chunks.length; i++) {
-        await message.channel.send(chunks[i]);
-      }
-      // Post a reasoning trail for non-trivial turns.
-      //  - In a text channel: open a thread on the reply and put the trail
-      //    there. Channel view stays clean; the thread is one click away.
-      //  - In a DM or an existing thread: post inline as a follow-up message.
-      if (response.progress && isInteresting(response.progress)) {
-        const trail = renderTrail(response.progress);
-        const canThread = !message.channel.isDMBased() && !message.channel.isThread();
-        if (canThread) {
+        // Debounced editor so a burst of round updates doesn't hammer Discord.
+        let lastEditAt = 0;
+        let lastRendered = '';
+        const MIN_EDIT_INTERVAL_MS = 600;
+        const onProgress = async (snap: ChatProgress): Promise<void> => {
+          if (snap.done) return; // final state is handled below
+          const now = Date.now();
+          if (now - lastEditAt < MIN_EDIT_INTERVAL_MS) return;
+          const next = renderLive(snap);
+          if (next === lastRendered) return;
+          lastEditAt = now;
+          lastRendered = next;
           try {
-            const thread = await placeholder.startThread({
-              name: '💭 reasoning',
-              autoArchiveDuration: 60,
-            });
-            for (const tc of chunkText(trail, DISCORD_CHUNK_MAX)) {
-              await thread.send(tc);
-            }
+            await placeholder.edit(next);
           } catch (err) {
-            log.warn('Failed to create reasoning thread, posting inline:', err);
+            log.warn('Failed to edit placeholder:', err);
+          }
+        };
+
+        let response;
+        try {
+          response = await handleChatMessage({
+            userId: message.author.id,
+            userName: message.member?.displayName ?? message.author.displayName ?? message.author.username,
+            channelId: message.channelId,
+            channelName: message.channel.isDMBased()
+              ? 'DM'
+              : (('name' in message.channel && message.channel.name) || 'unknown'),
+            content,
+          }, onProgress);
+        } catch (innerErr) {
+          log.error('handleChatMessage threw:', innerErr);
+          await placeholder.edit('Something went wrong. Moo. 🐄').catch(() => undefined);
+          return;
+        }
+
+        const chunks = chunkText(response.text, DISCORD_CHUNK_MAX);
+        const attachments = response.files?.map(
+          (f) => new AttachmentBuilder(f.data, { name: f.name, description: f.description }),
+        );
+        // Replace the placeholder with the first chunk + any attachments.
+        try {
+          await placeholder.edit(
+            attachments && attachments.length > 0
+              ? { content: chunks[0], files: attachments }
+              : { content: chunks[0] },
+          );
+        } catch (err) {
+          log.warn('Failed to edit final reply, sending as new message:', err);
+          await message.reply(
+            attachments && attachments.length > 0
+              ? { content: chunks[0], files: attachments }
+              : chunks[0],
+          );
+        }
+        for (let i = 1; i < chunks.length; i++) {
+          await message.channel.send(chunks[i]);
+        }
+        // Post a reasoning trail for non-trivial turns.
+        //  - In a text channel: open a thread on the reply and put the trail
+        //    there. Channel view stays clean; the thread is one click away.
+        //  - In a DM or an existing thread: post inline as a follow-up message.
+        if (response.progress && isInteresting(response.progress)) {
+          const trail = renderTrail(response.progress);
+          const canThread = !message.channel.isDMBased() && !message.channel.isThread();
+          if (canThread) {
+            try {
+              const thread = await placeholder.startThread({
+                name: '💭 reasoning',
+                autoArchiveDuration: 60,
+              });
+              for (const tc of chunkText(trail, DISCORD_CHUNK_MAX)) {
+                await thread.send(tc);
+              }
+            } catch (err) {
+              log.warn('Failed to create reasoning thread, posting inline:', err);
+              for (const tc of chunkText(trail, DISCORD_CHUNK_MAX)) {
+                await message.channel.send(tc);
+              }
+            }
+          } else {
             for (const tc of chunkText(trail, DISCORD_CHUNK_MAX)) {
               await message.channel.send(tc);
             }
           }
-        } else {
-          for (const tc of chunkText(trail, DISCORD_CHUNK_MAX)) {
-            await message.channel.send(tc);
-          }
         }
+      } finally {
+        chatTurn.finish();
       }
     } catch (err) {
       log.error('Error handling message:', err);
