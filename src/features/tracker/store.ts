@@ -263,6 +263,18 @@ export function getItemsForEvent(eventId: number): TrackerItem[] {
     .all(eventId) as TrackerItem[];
 }
 
+export function getAllItems(): TrackerItem[] {
+  return getDb()
+    .prepare(`SELECT * FROM items ORDER BY event_id, created_at`)
+    .all() as TrackerItem[];
+}
+
+export function getItemsByStatus(status: string): TrackerItem[] {
+  return getDb()
+    .prepare(`SELECT * FROM items WHERE status = ? ORDER BY event_id, created_at`)
+    .all(status) as TrackerItem[];
+}
+
 export function getOpenItemsForEvent(eventId: number): TrackerItem[] {
   return getDb()
     .prepare(`SELECT * FROM items WHERE event_id = ? AND status = 'open' ORDER BY target_date, created_at`)

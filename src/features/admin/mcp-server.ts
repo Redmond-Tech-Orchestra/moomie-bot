@@ -5,8 +5,10 @@ import { z } from 'zod';
 import {
   getActiveEvents,
   getAllEvents,
+  getAllItems,
   getOpenItemsForEvent,
   getAllOpenItems,
+  getItemsByStatus,
   getStaleItems,
   getOrphanItems,
   getItemsForEvent,
@@ -54,9 +56,17 @@ function createMcpServer(): McpServer {
     } else if (stale_days) {
       items = getStaleItems(stale_days);
     } else if (event_id) {
-      items = status === 'all' ? getItemsForEvent(event_id) : getOpenItemsForEvent(event_id);
-    } else {
+      items = status === 'all'
+        ? getItemsForEvent(event_id)
+        : status === 'open'
+          ? getOpenItemsForEvent(event_id)
+          : getItemsForEvent(event_id).filter((item) => item.status === status);
+    } else if (status === 'all') {
+      items = getAllItems();
+    } else if (status === 'open') {
       items = getAllOpenItems();
+    } else {
+      items = getItemsByStatus(status);
     }
     return {
       content: [{ type: 'text', text: JSON.stringify(items, null, 2) }],

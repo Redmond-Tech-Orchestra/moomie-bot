@@ -4,6 +4,7 @@ import { ChannelType, client, type Guild, type GuildMember, type TextChannel } f
 import { getDb } from '../../db.js';
 import { DISCORD_GUILD_ID } from '../../config.js';
 import {
+  getAllItems,
   getAllOpenItems,
   getOpenItemsForEvent,
   getActiveEvents,
@@ -14,6 +15,7 @@ import {
   markItemDone,
   updateItemDescription,
   getOwnersForItemIds,
+  getItemsByStatus,
   setItemOwners,
   reassignItems,
   type TrackerItem,
@@ -34,13 +36,13 @@ const log = createLogger('Chat');
 export const toolDeclarations = [
   {
     name: 'query_items',
-    description: 'Search tracked action items. Returns open items, optionally filtered by event or keyword.',
+    description: 'Search tracked action items. Returns open items by default, optionally filtered by event, keyword, or status.',
     parameters: {
       type: 'object',
       properties: {
         event_id: { type: 'number', description: 'Filter by event ID' },
         keyword: { type: 'string', description: 'Filter items whose description contains this keyword (case-insensitive)' },
-        status: { type: 'string', enum: ['open', 'done', 'stale'], description: 'Filter by status. Defaults to open.' },
+        status: { type: 'string', enum: ['open', 'done', 'stale', 'all'], description: 'Filter by status. Defaults to open.' },
       },
     },
   },
@@ -300,7 +302,7 @@ const toolSchemas: Record<string, z.ZodTypeAny> = {
   query_items: z.object({
     event_id: z.number().optional().describe('Filter by event ID'),
     keyword: z.string().optional().describe('Filter items whose description contains this keyword (case-insensitive)'),
-    status: z.enum(['open', 'done', 'stale']).optional().describe('Filter by status. Defaults to open.'),
+    status: z.enum(['open', 'done', 'stale', 'all']).optional().describe('Filter by status. Defaults to open.'),
   }),
   resolve_item: z.object({
     item_id: z.number().describe('The ID of the item to resolve'),
@@ -407,14 +409,17 @@ function queryItems(args: Record<string, unknown>): string {
 
   let items: TrackerItem[];
   if (eventId) {
-    items = status === 'open' ? getOpenItemsForEvent(eventId) : getItemsForEvent(eventId);
-  } else {
+    items = status === 'all'
+      ? getItemsForEvent(eventId)
+      : status === 'open'
+        ? getOpenItemsForEvent(eventId)
+        : getItemsForEvent(eventId).filter((item) => item.status === status);
+  } else if (status === 'all') {
+    items = getAllItems();
+  } else if (status === 'open') {
     items = getAllOpenItems();
-    if (status !== 'open') {
-      items = getDb()
-        .prepare(`SELECT * FROM items WHERE status = ? ORDER BY event_id, created_at`)
-        .all(status) as TrackerItem[];
-    }
+  } else {
+    items = getItemsByStatus(status);
   }
 
   if (keyword) {
