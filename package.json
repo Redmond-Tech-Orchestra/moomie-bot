@@ -29,6 +29,7 @@
     "discord.js": "^14.16.0",
     "dotenv": "^16.4.0",
     "express": "^4.21.0",
+    "qrcode": "^1.5.4",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -36,6 +37,7 @@
     "@types/better-sqlite3": "^7.6.0",
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
+    "@types/qrcode": "^1.5.6",
     "eslint": "^10.3.0",
     "smee-client": "^5.0.0",
     "tsx": "^4.19.0",
