@@ -1,5 +1,6 @@
 import { tool, type Tool } from 'ai';
 import { z } from 'zod';
+import QRCode from 'qrcode';
 import { ChannelType, client, type Guild, type GuildMember, type TextChannel } from '../../adapters/index.js';
 import { getDb } from '../../db.js';
 import { DISCORD_GUILD_ID } from '../../config.js';
@@ -193,6 +194,19 @@ export const toolDeclarations = [
     },
   },
   {
+    name: 'generate_qr_code',
+    description: 'Generate a QR code PNG attachment for a URL or short text. Use this when a user asks for a QR code, especially for printable or high-resolution QR codes.',
+    parameters: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: 'URL or short text to encode in the QR code.' },
+        file_name: { type: 'string', description: 'Optional PNG filename. Defaults to qr-code.png.' },
+        size_px: { type: 'number', description: 'Image width/height in pixels. Defaults to 2048; allowed range 256-4096.' },
+      },
+      required: ['content'],
+    },
+  },
+  {
     name: 'request_website_update',
     description: 'Request a change or update to the orchestra website. Use this for adding content, fixing typos, updating concert descriptions, or any other website-related task. Moomie will create a GitHub issue and start working on it automatically.',
     parameters: {
@@ -282,6 +296,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
     case 'read_channel_messages': return readChannelMessages(args);
     case 'list_channels': return listChannels(args);
     case 'create_reminder': return createReminderTool(args, ctx);
+    case 'generate_qr_code': return generateQrCodeTool(args, ctx);
     case 'request_website_update': return requestWebsiteUpdateTool(args, ctx);
     case 'submit_feedback': return submitFeedbackTool(args, ctx);
     case 'sync_eventbrite_archive': return syncEventbriteArchiveTool(args);
@@ -358,6 +373,11 @@ const toolSchemas: Record<string, z.ZodTypeAny> = {
     time: z.string().describe('When to remind, e.g. "in 2 hours", "tomorrow at 3pm", "next monday"'),
     user_id: z.string().optional().describe('Discord user ID to remind. Defaults to the requesting user.'),
     channel_id: z.string().optional().describe('Channel to send reminder in. Defaults to current channel.'),
+  }),
+  generate_qr_code: z.object({
+    content: z.string().min(1).max(2000).describe('URL or short text to encode in the QR code.'),
+    file_name: z.string().optional().describe('Optional PNG filename. Defaults to qr-code.png.'),
+    size_px: z.number().int().min(256).max(4096).optional().describe('Image width/height in pixels. Defaults to 2048.'),
   }),
   request_website_update: z.object({
     task: z.string().describe('Clear description of the website change needed.'),
@@ -1033,6 +1053,56 @@ function createReminderTool(args: Record<string, unknown>, ctx: ToolCallContext)
     success: true,
     message: `Reminder set for ${parsed.date.toISOString()}: "${message}"`,
   });
+}
+
+async function generateQrCodeTool(args: Record<string, unknown>, ctx: ToolCallContext): Promise<string> {
+  const content = (args.content as string | undefined)?.trim();
+  if (!content) return JSON.stringify({ error: 'content is required' });
+
+  const sizePx = Math.min(Math.max((args.size_px as number | undefined) ?? 2048, 256), 4096);
+  const fileName = sanitizePngFileName((args.file_name as string | undefined) ?? 'qr-code.png');
+
+  try {
+    const data = await QRCode.toBuffer(content, {
+      type: 'png',
+      width: sizePx,
+      margin: 4,
+      errorCorrectionLevel: 'H',
+      color: {
+        dark: '#000000',
+        light: '#FFFFFF',
+      },
+    });
+
+    ctx.files.push({
+      name: fileName,
+      data,
+      description: `QR code for ${content.slice(0, 120)}`,
+    });
+
+    return JSON.stringify({
+      success: true,
+      file_name: fileName,
+      size_px: sizePx,
+      format: 'png',
+      error_correction: 'H',
+      files_attached: [fileName],
+    });
+  } catch (err) {
+    log.error('generate_qr_code failed:', err);
+    return JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+function sanitizePngFileName(name: string): string {
+  const cleaned = name
+    .trim()
+    .replace(/[/\\]/g, '-')
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .replace(/^_+/, '')
+    .slice(0, 80);
+  const base = cleaned || 'qr-code';
+  return base.toLowerCase().endsWith('.png') ? base : `${base}.png`;
 }
 
 async function submitFeedbackTool(args: Record<string, unknown>, ctx: ToolCallContext): Promise<string> {
