@@ -1,9 +1,9 @@
 import type { CommandContext } from '../../types.js';
-import { createIssue } from '../coding/github-client.js';
+import { createIssue, getOctokit } from '../coding/github-client.js';
 import { trackIssue } from '../coding/issue-tracker.js';
 import { generateIssueTitle } from '../coding/title-generator.js';
 import { saveAttachment } from './attachment-store.js';
-import { GITHUB_REPO } from '../../config.js';
+import { GITHUB_OWNER, GITHUB_REPO } from '../../config.js';
 import { notifyUser } from '../../adapters/index.js';
 import { createLogger } from '../../logger.js';
 
@@ -14,6 +14,7 @@ export const description = 'Create a website issue and have Moomie work on it';
 
 export interface WebsiteUpdateOptions {
   task: string;
+  existingIssueNumber?: number;
   attachments?: { name: string; url: string }[];
   platform: 'discord' | 'teams';
   userId: string;
@@ -24,8 +25,85 @@ export interface WebsiteUpdateOptions {
   startThread?: (title: string) => Promise<string | undefined>;
 }
 
-export async function executeWebsiteUpdate(opts: WebsiteUpdateOptions): Promise<{ issueUrl: string; threadId?: string }> {
+const TRIGGER_LABEL = 'moomie-bot';
+
+function parseExistingIssueNumber(task: string): number | undefined {
+  const repoUrl = new RegExp(
+    `github\\.com/${escapeRegExp(GITHUB_OWNER)}/${escapeRegExp(GITHUB_REPO)}/issues/(\\d+)`,
+    'i',
+  );
+  const urlMatch = task.match(repoUrl);
+  if (urlMatch) return Number(urlMatch[1]);
+
+  const issueMatch = task.match(/\bissue\s+#?(\d+)\b/i);
+  return issueMatch ? Number(issueMatch[1]) : undefined;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export async function executeWebsiteUpdate(opts: WebsiteUpdateOptions): Promise<{ issueUrl: string; threadId?: string; issueNumber: number; created: boolean }> {
   const { task, attachments, platform, userId, userName, channelId, conversationRef, startThread } = opts;
+  const existingIssueNumber = opts.existingIssueNumber ?? parseExistingIssueNumber(task);
+
+  if (existingIssueNumber) {
+    const octokit = getOctokit();
+    const { data: issue } = await octokit.issues.get({
+      owner: GITHUB_OWNER,
+      repo: GITHUB_REPO,
+      issue_number: existingIssueNumber,
+    });
+
+    if (issue.pull_request) {
+      throw new Error(`#${existingIssueNumber} is a pull request, not a website issue.`);
+    }
+    if (issue.state !== 'open') {
+      throw new Error(`#${existingIssueNumber} is closed.`);
+    }
+
+    const threadId = startThread
+      ? await startThread(`#${issue.number}: ${issue.title}`)
+      : undefined;
+    const trackingChannelId = threadId ?? channelId;
+
+    trackIssue(issue.number, GITHUB_REPO, {
+      channelId: trackingChannelId,
+      userId,
+      platform,
+      conversationRef,
+    });
+
+    const hasTriggerLabel = issue.labels.some((label) => {
+      const name = typeof label === 'string' ? label : label.name;
+      return name === TRIGGER_LABEL;
+    });
+    if (!hasTriggerLabel) {
+      await octokit.issues.addLabels({
+        owner: GITHUB_OWNER,
+        repo: GITHUB_REPO,
+        issue_number: issue.number,
+        labels: [TRIGGER_LABEL],
+      });
+    }
+
+    if (threadId) {
+      try {
+        await notifyUser(
+          {
+            platform: 'discord',
+            channelId: threadId,
+            userId,
+          },
+          `📋 Tracking existing issue: ${issue.html_url}\nOn it — I'll post the PR here when it's ready, and you can reply in this thread to ask for changes.`,
+        );
+      } catch (err) {
+        log.warn(`Failed to post kickoff message in thread ${threadId}:`, err);
+      }
+    }
+
+    return { issueUrl: issue.html_url, threadId, issueNumber: issue.number, created: false };
+  }
 
   // Save attachments locally if provided as URLs
   const uploadedFiles: { name: string; fileName: string }[] = [];
@@ -88,7 +166,7 @@ export async function executeWebsiteUpdate(opts: WebsiteUpdateOptions): Promise<
     }
   }
 
-  return { issueUrl: issue.html_url, threadId };
+  return { issueUrl: issue.html_url, threadId, issueNumber: issue.number, created: true };
 }
 
 export async function execute(ctx: CommandContext, args: string): Promise<void> {
@@ -100,7 +178,7 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
   await ctx.deferReply();
 
   try {
-    const { issueUrl, threadId } = await executeWebsiteUpdate({
+    const { issueUrl, threadId, created } = await executeWebsiteUpdate({
       task: args,
       attachments: ctx.attachments,
       platform: ctx.platform,
@@ -112,8 +190,8 @@ export async function execute(ctx: CommandContext, args: string): Promise<void> 
     });
 
     const summary = threadId
-      ? `Issue created: ${issueUrl}\nFollow along in the thread — Moomie will post updates there.`
-      : `Issue created: ${issueUrl}\nMoomie will start working on it shortly.`;
+      ? `${created ? 'Issue created' : 'Tracking existing issue'}: ${issueUrl}\nFollow along in the thread — Moomie will post updates there.`
+      : `${created ? 'Issue created' : 'Tracking existing issue'}: ${issueUrl}\nMoomie will start working on it shortly.`;
     await ctx.editReply(summary);
   } catch (err) {
     log.error('Failed to create issue:', err);

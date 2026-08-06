@@ -208,11 +208,12 @@ export const toolDeclarations = [
   },
   {
     name: 'request_website_update',
-    description: 'Request a change or update to the orchestra website. Use this for adding content, fixing typos, updating concert descriptions, or any other website-related task. Moomie will create a GitHub issue and start working on it automatically.',
+    description: 'Request a change or update to the orchestra website. Use this for adding content, fixing typos, updating concert descriptions, or any other website-related task. If the user links or references an existing website GitHub issue, pass its issue number so Moomie tracks and works that issue instead of creating a duplicate.',
     parameters: {
       type: 'object',
       properties: {
         task: { type: 'string', description: 'Clear description of the website change needed.' },
+        existing_issue_number: { type: 'number', description: 'Existing GitHub issue number in the website repo, if the user provided one.' },
       },
       required: ['task'],
     },
@@ -381,6 +382,7 @@ const toolSchemas: Record<string, z.ZodTypeAny> = {
   }),
   request_website_update: z.object({
     task: z.string().describe('Clear description of the website change needed.'),
+    existing_issue_number: z.number().int().positive().optional().describe('Existing GitHub issue number in the website repo, if the user provided one.'),
   }),
   submit_feedback: z.object({
     feedback: z.string().describe('What Moomie got wrong, described clearly'),
@@ -1203,6 +1205,7 @@ async function analyzeEventbriteTool(args: Record<string, unknown>, ctx: ToolCal
 async function requestWebsiteUpdateTool(args: Record<string, unknown>, ctx: ToolCallContext): Promise<string> {
   const task = args.task as string;
   if (!task) return JSON.stringify({ error: 'task is required' });
+  const existingIssueNumber = args.existing_issue_number as number | undefined;
 
   try {
     const guild = client.guilds.cache.get(DISCORD_GUILD_ID);
@@ -1219,8 +1222,9 @@ async function requestWebsiteUpdateTool(args: Record<string, unknown>, ctx: Tool
       return undefined;
     };
 
-    const { issueUrl, threadId } = await executeWebsiteUpdate({
+    const { issueUrl, threadId, created } = await executeWebsiteUpdate({
       task,
+      existingIssueNumber,
       platform: 'discord',
       userId: ctx.userId,
       userName: ctx.userName,
@@ -1232,6 +1236,7 @@ async function requestWebsiteUpdateTool(args: Record<string, unknown>, ctx: Tool
       success: true,
       issue_url: issueUrl,
       thread_id: threadId,
+      existing_issue: !created,
       message: `Website update requested. Issue: ${issueUrl}${threadId ? ` (Thread: <#${threadId}>)` : ''}`,
     });
   } catch (err) {
