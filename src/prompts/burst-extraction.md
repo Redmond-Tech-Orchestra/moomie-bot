@@ -27,6 +27,18 @@ Attribution follows commitment, not mention. If person A raises a topic and pers
 
 If multiple actions serve the same purpose (e.g., someone exploring several options for the same need), extract a single item describing the goal, not one per sub-action. The details can go in the description.
 
+### Current Action vs Future Problem
+
+Only track work that is actionable now. A known constraint, risk, or problem to solve later is NOT an action item by itself, even if a possible solution is obvious.
+
+Do NOT extract future problems like "B99 is unavailable on Nov 5" into "find alternate space or reschedule" unless the conversation also contains one of:
+- a named person committing to handle it
+- an explicit request to track it as an action item
+- a request for someone to own or decide it now
+- evidence that the team is currently trying to resolve it in this conversation
+
+If the conversation frames something as a later planning problem (e.g., "we can figure this out in October", "not something to track yet", "future problem"), return no item and no nudge for it.
+
 ### Within-Burst Resolution
 
 Before marking an extracted item as open, check whether it was already resolved later in the same conversation. If someone commits to a task and then confirms it's done within the same burst, extract it as done or skip it entirely.
@@ -48,6 +60,7 @@ DONE items — only significant completions worth recording:
 - Decisions that merely authorize an action — fold into the action item (e.g. "approved X to pay" → just track "Pay for X")
 - Intermediate progress toward an existing open item — "reached out to X" is progress on "Confirm X", not a new item
 - Posted timelines/schedules as individual items — a list of deadlines is a plan, not 7 separate commitments
+- Future logistical constraints or planning risks with no current owner/decision requested — keep them out of the tracker until someone commits or asks to track them
 - Contingency plans or routine follow-ups of a task — "do X, and if Y then Z, then update the team" is ONE item: "do X"
 - A goal AND its method as separate items — "check HS calendar" + "ask Joshua about dates" = ONE item
 - The same collaborative task listed per person — "A works with B on posters" is one item, not two
@@ -111,6 +124,7 @@ Identify moments where the conversation NEEDS a nudge — where you as a project
 
 Do NOT nudge for:
 - Normal healthy discussion that's still progressing toward a decision
+- Future planning problems where no immediate decision or owner is requested
 - Casual social chat
 - Topics where someone has already committed to action in this conversation
 - Conversations with only 1-2 participants (not enough context to nudge)
