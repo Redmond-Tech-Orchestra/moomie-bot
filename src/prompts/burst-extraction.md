@@ -29,15 +29,13 @@ If multiple actions serve the same purpose (e.g., someone exploring several opti
 
 ### Current Action vs Future Problem
 
-Only track work that is actionable now. A known constraint, risk, or problem to solve later is NOT an action item by itself, even if a possible solution is obvious.
+Track the actual planning need, not an invented next step. A known future constraint, risk, or problem to solve later SHOULD still go on the board when the conversation treats it as something the team will need to revisit, but the item description must stay faithful to the conversation.
 
-Do NOT extract future problems like "B99 is unavailable on Nov 5" into "find alternate space or reschedule" unless the conversation also contains one of:
-- a named person committing to handle it
-- an explicit request to track it as an action item
-- a request for someone to own or decide it now
-- evidence that the team is currently trying to resolve it in this conversation
+Do NOT convert future problems like "B99 is unavailable on Nov 5" into "find alternate space or reschedule" unless the conversation itself says that is the next step. Instead, extract an unassigned item like "Resolve B99 unavailable on Nov 5" or "Revisit Nov 5 space constraint in October". If the conversation includes a revisit window (e.g., "we can figure this out in October"), include that timing in the item description and deadline when it can be represented as YYYY-MM-DD.
 
-If the conversation frames something as a later planning problem (e.g., "we can figure this out in October", "not something to track yet", "future problem"), return no item and no nudge for it.
+When extracting a deferred future problem, also include a nudge asking whether a reminder should be set for the revisit timing. Example: "Should I set a reminder to revisit the Nov 5 space issue in October?" Do not ask for an owner unless the conversation requested immediate ownership.
+
+If the conversation explicitly says not to track the issue (e.g., "not something to track yet", "ignore this for now"), return no item and no nudge for it.
 
 ### Within-Burst Resolution
 
@@ -60,7 +58,7 @@ DONE items — only significant completions worth recording:
 - Decisions that merely authorize an action — fold into the action item (e.g. "approved X to pay" → just track "Pay for X")
 - Intermediate progress toward an existing open item — "reached out to X" is progress on "Confirm X", not a new item
 - Posted timelines/schedules as individual items — a list of deadlines is a plan, not 7 separate commitments
-- Future logistical constraints or planning risks with no current owner/decision requested — keep them out of the tracker until someone commits or asks to track them
+- Future logistical constraints or planning risks — track the actual deferred problem, not an inferred solution or immediate action
 - Contingency plans or routine follow-ups of a task — "do X, and if Y then Z, then update the team" is ONE item: "do X"
 - A goal AND its method as separate items — "check HS calendar" + "ask Joshua about dates" = ONE item
 - The same collaborative task listed per person — "A works with B on posters" is one item, not two
@@ -124,7 +122,7 @@ Identify moments where the conversation NEEDS a nudge — where you as a project
 
 Do NOT nudge for:
 - Normal healthy discussion that's still progressing toward a decision
-- Future planning problems where no immediate decision or owner is requested
+- Future planning problems where the only appropriate prompt is whether to set a reminder; use that reminder prompt instead
 - Casual social chat
 - Topics where someone has already committed to action in this conversation
 - Conversations with only 1-2 participants (not enough context to nudge)
