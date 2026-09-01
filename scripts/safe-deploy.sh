@@ -13,6 +13,7 @@
 #   2. Ask the bot to drain (finish active coding/chat work, stop taking new work).
 #   3. Wait for running work to settle, capped at one job timeout.
 #   4. Swap to the new image.
+#   5. Once healthy, remove the temporary rollback image.
 #
 # Queued jobs are persisted in the coding_jobs table and resume on startup, so
 # we only ever wait for the single *running* job — never the whole queue. If the
@@ -29,6 +30,9 @@ cd "$(dirname "$0")/.."   # repo root (e.g. /opt/moomie-bot)
 STATUS_URL="http://localhost:3000"
 MAX_WAIT_SECONDS="${DEPLOY_MAX_WAIT_SECONDS:-2400}"
 FORCE="${DEPLOY_FORCE:-0}"
+IMAGE_NAME="${MOOMIE_IMAGE_NAME:-moomie-bot-bot:latest}"
+ROLLBACK_IMAGE="${MOOMIE_ROLLBACK_IMAGE:-moomie-bot-bot:rollback}"
+HEALTH_WAIT_SECONDS="${DEPLOY_HEALTH_WAIT_SECONDS:-120}"
 
 # Honor a [force-deploy] marker in the latest commit message (Action path).
 if git rev-parse --git-dir >/dev/null 2>&1; then
@@ -51,6 +55,12 @@ undrain() {
   fi
 }
 trap undrain EXIT
+
+current_image="$(docker inspect --format '{{.Image}}' moomie-bot 2>/dev/null || true)"
+if [ -n "$current_image" ]; then
+  echo "==> Saving current image as $ROLLBACK_IMAGE…"
+  docker image tag "$current_image" "$ROLLBACK_IMAGE"
+fi
 
 echo "==> Building new image (running container untouched)…"
 docker compose build
@@ -90,6 +100,37 @@ fi
 
 echo "==> Swapping to the new image…"
 docker compose up -d
+
+echo "==> Waiting for container health (max ${HEALTH_WAIT_SECONDS}s)…"
+health_deadline=$(( $(date +%s) + HEALTH_WAIT_SECONDS ))
+while :; do
+  health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' moomie-bot 2>/dev/null || echo missing)"
+  if [ "$health" = "healthy" ]; then
+    echo "   replacement is healthy."
+    break
+  fi
+  if [ "$health" = "unhealthy" ] || [ "$health" = "exited" ] || [ "$health" = "missing" ] || [ "$(date +%s)" -ge "$health_deadline" ]; then
+    echo "   replacement health is '$health'; restoring $ROLLBACK_IMAGE."
+    if docker image inspect "$ROLLBACK_IMAGE" >/dev/null 2>&1; then
+      docker image tag "$ROLLBACK_IMAGE" "$IMAGE_NAME"
+      docker compose up -d --no-build --force-recreate
+    fi
+    exit 1
+  fi
+  sleep 5
+done
+
+# Rollback only needs to occupy disk during the risky swap/health-check window.
+# Remove exactly Moomie's previous image; do not prune unrelated host images.
+if docker image inspect "$ROLLBACK_IMAGE" >/dev/null 2>&1; then
+  rollback_image_id="$(docker image inspect --format '{{.Id}}' "$ROLLBACK_IMAGE")"
+  echo "==> Removing temporary rollback image…"
+  docker image rm "$ROLLBACK_IMAGE" >/dev/null 2>&1 || true
+  if [ "$rollback_image_id" != "$(docker inspect --format '{{.Image}}' moomie-bot)" ]; then
+    docker image rm "$rollback_image_id" >/dev/null 2>&1 || true
+  fi
+fi
+
 drained=0   # new container starts un-drained; nothing to undo on exit now
 
 echo "==> Pruning Docker build cache (older than 24h)…"

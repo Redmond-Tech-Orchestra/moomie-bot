@@ -20,6 +20,7 @@ import { resolveActivity } from '../../adapters/index.js';
 import type { ActivityTarget } from '../../adapters/index.js';
 import { AGENT_WORKSPACE, GITHUB_OWNER, GITHUB_REPO } from '../../config.js';
 import { createLogger } from '../../logger.js';
+import { withActiveWorkspace } from './storage-maintenance.js';
 
 const log = createLogger('JobRunner');
 
@@ -153,9 +154,10 @@ async function processQueue(): Promise<void> {
   });
 
   try {
-    const work = job.kind === 'new'
+    const repoDir = getRepoDir(jobRepo(job));
+    const work = withActiveWorkspace(repoDir, () => job.kind === 'new'
       ? executeTask(job.options)
-      : executeRevision(job.options);
+      : executeRevision(job.options));
     const result = await Promise.race([work, timeoutPromise]);
     if (result.success) markDone(job.dbId, result);
     else markFailed(job.dbId, result);
@@ -286,7 +288,10 @@ function cleanupLocalBranches(repoDir: string): void {
 export function warmupRepo(): void {
   warmupPromise = (async () => {
     try {
-      const repoDir = await cloneOrPull();
+      const repoDir = getRepoDir();
+      await withActiveWorkspace(repoDir, async () => {
+        await cloneOrPull();
+      });
       cleanupLocalBranches(repoDir);
       log.info(`Repo ready at ${repoDir}`);
     } catch (err) {
