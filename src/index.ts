@@ -6,6 +6,7 @@ import { getDb } from './db.js';
 import { startLogPruning } from './logger.js';
 import { reapStaleSandboxes } from './features/sandbox/python-runner.js';
 import { interruptActiveChatTurns } from './features/chat/active-turns.js';
+import { startStorageMaintenance } from './features/coding/storage-maintenance-service.js';
 
 // ─── Validate required env vars (secrets only — non-secrets have defaults in config.ts) ──
 const required = ['DISCORD_TOKEN', 'GITHUB_APP_PRIVATE_KEY_PATH'];
@@ -22,6 +23,7 @@ if (!process.env.GITHUB_WEBHOOK_SECRET) {
 // ─── Start services ──────────────────────────────────────────────────────────
 await startDiscord();
 startServer(client);
+await startStorageMaintenance();
 warmupRepo();
 // Re-enqueue coding jobs that were queued or running when we last stopped
 // (deploy/crash). Runs after warmupRepo so the agent workspace is ready; the

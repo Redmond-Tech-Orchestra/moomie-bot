@@ -1,6 +1,7 @@
 services:
   bot:
     build: .
+    image: moomie-bot-bot:latest
     container_name: moomie-bot
     restart: unless-stopped
     init: true

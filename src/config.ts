@@ -57,6 +57,19 @@ export const WEB_APPROVER_ROLE = process.env.WEB_APPROVER_ROLE || 'moomie:web-ap
 export const CODING_AGENT = process.env.CODING_AGENT || 'codex';
 export const AGENT_WORKSPACE = process.env.AGENT_WORKSPACE || './workspace';
 
+function positiveNumber(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export const STORAGE_MAINTENANCE_ENABLED = process.env.STORAGE_MAINTENANCE_ENABLED !== 'false';
+export const STORAGE_MAINTENANCE_INTERVAL_HOURS = positiveNumber(process.env.STORAGE_MAINTENANCE_INTERVAL_HOURS, 6);
+export const WORKSPACE_MAX_GB = positiveNumber(process.env.WORKSPACE_MAX_GB, 3);
+export const WORKSPACE_RETENTION_DAYS = positiveNumber(process.env.WORKSPACE_RETENTION_DAYS, 30);
+export const REBUILDABLE_RETENTION_DAYS = positiveNumber(process.env.REBUILDABLE_RETENTION_DAYS, 7);
+export const TOOL_CACHE_MAX_GB = positiveNumber(process.env.TOOL_CACHE_MAX_GB, 2);
+export const TOOL_CACHE_RETENTION_DAYS = positiveNumber(process.env.TOOL_CACHE_RETENTION_DAYS, 30);
+
 // Eventbrite
 export const EVENTBRITE_ORG_ID = process.env.EVENTBRITE_ORG_ID || '2020393260733';
 export const EVENTBRITE_DATA_DIR = process.env.EVENTBRITE_DATA_DIR || './data/eventbrite';

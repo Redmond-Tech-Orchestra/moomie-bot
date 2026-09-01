@@ -32,22 +32,26 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
+# Create only the directories that must be writable at runtime. Dependency and
+# application files enter the image with their final owner, avoiding a copy-up
+# of the full dependency tree in a later recursive chown layer.
+RUN mkdir -p /app/data /app/uploads /app/workspace \
+  /home/node/.cache /home/node/.npm /home/node/.codex /home/node/.gemini \
+ && chown node:node /app /app/data /app/uploads /app/workspace \
+  /home/node/.cache /home/node/.npm /home/node/.codex /home/node/.gemini
+
+COPY --chown=node:node package.json package-lock.json* ./
+
+USER node
+
 RUN npm ci --omit=dev
 
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/src/prompts ./dist/prompts
-COPY policies/ ./policies/
-
-# Pre-create writable dirs and chown all of /app to the non-root `node` user
-# (the devcontainer base image provides node as UID 1000)
-RUN mkdir -p /app/data /app/uploads /app/workspace \
- && chown -R node:node /app
+COPY --chown=node:node --from=builder /app/dist ./dist
+COPY --chown=node:node --from=builder /app/src/prompts ./dist/prompts
+COPY --chown=node:node policies/ ./policies/
 
 ENV NODE_ENV=production
 ENV DB_PATH=/app/data/moomie.db
-
-USER node
 
 EXPOSE 3000
 

@@ -6,6 +6,8 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
+    "test": "tsx --test tests/*.test.ts",
+    "storage:dry-run": "tsx src/storage-maintenance-command.ts",
     "start": "node dist/index.js",
     "dev": "tsx --watch src/index.ts",
     "lint": "eslint src/",
