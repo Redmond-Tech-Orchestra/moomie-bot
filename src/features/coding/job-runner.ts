@@ -219,7 +219,9 @@ async function cloneOrPull(repo?: string): Promise<string> {
     // Configure credential for future operations on this repo
     git(['config', 'credential.helper', ''], repoDir);
     git(['remote', 'set-url', 'origin', cloneUrl], repoDir);
+    excludeMaintenanceMarker(repoDir);
   } else {
+    excludeMaintenanceMarker(repoDir);
     // Set fresh token for pull
     setGitToken(repoDir, token, repoSlug);
     git(['checkout', 'main'], repoDir);
@@ -234,6 +236,24 @@ async function cloneOrPull(repo?: string): Promise<string> {
   ensureNodeModules(repoDir);
 
   return repoDir;
+}
+
+/**
+ * The usage marker is deliberately stored in the checkout so maintenance can
+ * use its timestamp, but it must not participate in repository operations.
+ */
+function excludeMaintenanceMarker(repoDir: string): void {
+  const excludePath = path.join(repoDir, '.git', 'info', 'exclude');
+  const marker = '.moomie-last-used';
+  try {
+    const existing = fs.existsSync(excludePath) ? fs.readFileSync(excludePath, 'utf8') : '';
+    if (existing.split(/\r?\n/).some((line) => line.trim() === marker)) return;
+    fs.mkdirSync(path.dirname(excludePath), { recursive: true });
+    const prefix = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
+    fs.appendFileSync(excludePath, `${prefix}${marker}\n`);
+  } catch (err) {
+    log.warn(`Could not configure local Git excludes in ${path.basename(repoDir)}:`, err);
+  }
 }
 
 function ensureNodeModules(repoDir: string): void {
@@ -759,4 +779,3 @@ async function executeRevision(options: RevisionTaskOptions): Promise<Orchestrat
 
   return settle({ success: true, prUrl: pr.htmlUrl, prNumber: pr.number, summary: result.summary });
 }
-
