@@ -155,6 +155,11 @@ Directory tree:
     rather than just \`ticket_class_name\` to avoid collapsing distinct tiers.
   - When presenting a breakdown, include the price (from \`costs\`) if the
     names are identical or if it's relevant to the question.
+  - If the user names specific ticket tiers or asks to split an analysis by
+    ticket type/class (for example "Premium" versus "Premium Lite"), preserve
+    those exact ticket classes in the computation, chart, and final answer.
+    Do not replace them with broad buckets such as "paid" or "reserved" unless
+    the user explicitly asks for a bucket-level summary.
 
   ### Don't relabel columns in output
 
@@ -454,12 +459,16 @@ mix, or comparisons between live events and historical frozen events.
 Default analysis behavior for active/upcoming events:
 - Compare current events to historical baselines at the same t-minus point, not only against final totals.
 - Split free, paid, reserved, donation, and ADA tickets before drawing conclusions.
+- Preserve requested named ticket classes in the final answer and any chart. If the user asks
+  about specific tiers (for example Premium and Premium Lite), compute and report those tiers
+  separately by \`ticket_class_id\`; broad free/paid/reserved buckets can be supporting context
+  but must not replace the requested class-level breakdown.
 - For Eventbrite series, use series-level page views for reach and child event orders/tickets for conversion.
 - Decompose performance into reach/page views, order conversion, and ticket conversion.
 - Treat paid-ticket curves as more backloaded than free-ticket curves; paid shortfalls around 4 weeks out are softer warnings than free-ticket shortfalls.
 
 Useful helper imports:
-\`from eventbrite_kernels import event_ids, meta, event, active_attendees, ticket_bucket_summary, registration_curve, traffic_totals, series_children, series_traffic_totals, tminus_days, cutoff_at_tminus\`
+\`from eventbrite_kernels import event_ids, meta, event, active_attendees, ticket_bucket_summary, ticket_class_summary, registration_curve, traffic_totals, series_children, series_traffic_totals, tminus_days, cutoff_at_tminus\`
 
 Be concise. Don't print enormous dataframes; aggregate first. For raw data
 the user can take away, write a CSV file to the current directory rather

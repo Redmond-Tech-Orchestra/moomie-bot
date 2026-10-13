@@ -146,6 +146,50 @@ def ticket_bucket_summary(event_id, cutoff=None, data_dir=None):
     }
 
 
+def ticket_class_summary(event_id, cutoff=None, data_dir=None):
+    ticket_classes = {}
+    for tc in load_json(event_dir(event_id, data_dir) / "ticket_classes.json", []) or []:
+        tc_id = str(tc.get("id") or "")
+        ticket_classes[tc_id] = tc
+
+    counts = Counter()
+    gross = defaultdict(Decimal)
+    checked_in = Counter()
+    names = {}
+    for row in active_attendees(event_id, data_dir):
+        created = parse_dt(row.get("created"))
+        if cutoff and created and created > cutoff:
+            continue
+        tc_id = str(row.get("ticket_class_id") or "")
+        counts[tc_id] += 1
+        gross[tc_id] += money((row.get("costs") or {}).get("gross"))
+        names[tc_id] = row.get("ticket_class_name") or (ticket_classes.get(tc_id) or {}).get("name")
+        if row.get("checked_in"):
+            checked_in[tc_id] += 1
+
+    rows = []
+    for tc_id in sorted(set(ticket_classes) | set(counts)):
+        count = counts[tc_id]
+        tc = ticket_classes.get(tc_id) or {}
+        cost = tc.get("cost") if isinstance(tc.get("cost"), dict) else {}
+        row_price = gross[tc_id] / count if count else money(cost)
+        rows.append({
+            "ticket_class_id": tc_id,
+            "ticket_class_name": names.get(tc_id) or tc.get("name"),
+            "price": cost.get("display") or cost.get("major_value"),
+            "quantity_total": tc.get("quantity_total"),
+            "quantity_sold": tc.get("quantity_sold"),
+            "registrations": count,
+            "checked_in": checked_in[tc_id],
+            "gross": float(gross[tc_id]),
+            "bucket": ticket_bucket({
+                "ticket_class_name": names.get(tc_id) or tc.get("name") or "",
+                "costs": {"gross": {"major_value": str(row_price)}},
+            }),
+        })
+    return sorted(rows, key=lambda row: ((row.get("ticket_class_name") or ""), row.get("ticket_class_id") or ""))
+
+
 def registration_curve(event_id, bucket="free", marks=(60,45,30,28,21,14,10,7,5,3,1,0), data_dir=None):
     start = event_start(event_id, data_dir)
     rows = rows_for_bucket(event_id, bucket, data_dir=data_dir)
