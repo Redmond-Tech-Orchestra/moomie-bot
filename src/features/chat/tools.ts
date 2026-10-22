@@ -35,13 +35,14 @@ const log = createLogger('Chat');
 export const toolDeclarations = [
   {
     name: 'query_items',
-    description: 'Search tracked action items. Returns open items, optionally filtered by event or keyword.',
+    description: 'Search tracked action items. Returns open items, optionally filtered by item ID, event, status, or keyword.',
     parameters: {
       type: 'object',
       properties: {
+        item_id: { type: 'number', description: 'Exact action item ID to look up, such as 209 from "#209" or "item 209"' },
         event_id: { type: 'number', description: 'Filter by event ID' },
         keyword: { type: 'string', description: 'Filter items whose description contains this keyword (case-insensitive)' },
-        status: { type: 'string', enum: ['open', 'done', 'stale'], description: 'Filter by status. Defaults to open.' },
+        status: { type: 'string', enum: ['open', 'done', 'stale', 'all'], description: 'Filter by status. Defaults to open for broad searches; exact item_id lookups default to all statuses.' },
       },
     },
   },
@@ -313,9 +314,10 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
 
 const toolSchemas: Record<string, z.ZodTypeAny> = {
   query_items: z.object({
+    item_id: z.number().optional().describe('Exact action item ID to look up, such as 209 from "#209" or "item 209"'),
     event_id: z.number().optional().describe('Filter by event ID'),
     keyword: z.string().optional().describe('Filter items whose description contains this keyword (case-insensitive)'),
-    status: z.enum(['open', 'done', 'stale']).optional().describe('Filter by status. Defaults to open.'),
+    status: z.enum(['open', 'done', 'stale', 'all']).optional().describe('Filter by status. Defaults to open for broad searches; exact item_id lookups default to all statuses.'),
   }),
   resolve_item: z.object({
     item_id: z.number().describe('The ID of the item to resolve'),
@@ -421,19 +423,47 @@ export function buildChatTools(ctx: ToolCallContext): Record<string, Tool> {
 // ─── Tool Implementations ────────────────────────────────────────────────────
 
 function queryItems(args: Record<string, unknown>): string {
+  let itemId = args.item_id as number | undefined;
   const eventId = args.event_id as number | undefined;
-  const keyword = args.keyword as string | undefined;
-  const status = (args.status as string) || 'open';
+  let keyword = args.keyword as string | undefined;
+  const hasStatusFilter = typeof args.status === 'string';
+  const status = hasStatusFilter ? (args.status as string) : 'open';
+
+  const numericKeyword = keyword?.trim().match(/^#?(\d+)$/);
+  if (!itemId && numericKeyword) {
+    itemId = Number(numericKeyword[1]);
+    keyword = undefined;
+  }
 
   let items: TrackerItem[];
-  if (eventId) {
+  if (itemId) {
+    const where = ['id = ?'];
+    const params: unknown[] = [itemId];
+    if (eventId) {
+      where.push('event_id = ?');
+      params.push(eventId);
+    }
+    if (hasStatusFilter && status !== 'all') {
+      where.push('status = ?');
+      params.push(status);
+    }
+    items = getDb()
+      .prepare(`SELECT * FROM items WHERE ${where.join(' AND ')} ORDER BY event_id, created_at`)
+      .all(...params) as TrackerItem[];
+  } else if (eventId) {
     items = status === 'open' ? getOpenItemsForEvent(eventId) : getItemsForEvent(eventId);
+    if (status !== 'open' && status !== 'all') {
+      items = items.filter((item) => item.status === status);
+    }
   } else {
     items = getAllOpenItems();
     if (status !== 'open') {
-      items = getDb()
-        .prepare(`SELECT * FROM items WHERE status = ? ORDER BY event_id, created_at`)
-        .all(status) as TrackerItem[];
+      const sql = status === 'all'
+        ? `SELECT * FROM items ORDER BY event_id, created_at`
+        : `SELECT * FROM items WHERE status = ? ORDER BY event_id, created_at`;
+      items = status === 'all'
+        ? getDb().prepare(sql).all() as TrackerItem[]
+        : getDb().prepare(sql).all(status) as TrackerItem[];
     }
   }
 
