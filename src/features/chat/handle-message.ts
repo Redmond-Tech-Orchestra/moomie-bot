@@ -4,6 +4,7 @@ import { buildChatTools, type ChatFile } from './tools.js';
 import { modelFor } from '../../config.js';
 import { getModel, hasLlmKey } from '../../llm.js';
 import { createLogger } from '../../logger.js';
+import { collapseRepeatedFinalText } from './final-text.js';
 
 const log = createLogger('Chat');
 
@@ -230,7 +231,8 @@ export async function handleChatMessage(
       },
     });
 
-    const reply = (await result.text).trim() || 'Moo.';
+    const rawReply = (await result.text).trim() || 'Moo.';
+    const reply = collapseRepeatedFinalText(rawReply) || 'Moo.';
     const toolSummary = toolsUsed.length > 0 ? ` [tools: ${toolsUsed.join(', ')}]` : '';
     const fileSummary = collectedFiles.length > 0 ? ` [files: ${collectedFiles.map((f) => f.name).join(', ')}]` : '';
     auditChat(reply.slice(0, 500) + toolSummary + fileSummary);
